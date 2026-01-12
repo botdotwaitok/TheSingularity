@@ -12,11 +12,27 @@ if (typeof window.JSZip === 'undefined') {
         .fail(() => console.error("[Singularity] Failed to load JSZip."));
 }
 
+function getUniqueCharKey() {
+    const context = getContext();
+    if (context.characterId !== undefined && context.characters && context.characters[context.characterId]) {
+        return context.characters[context.characterId].avatar;
+    }
+    return context.name2;
+}
+
 function loadBiomass() {
     if (!extension_settings[SETTING_KEY]) {
         extension_settings[SETTING_KEY] = defaultSettings;
     }
     return extension_settings[SETTING_KEY];
+}
+
+function getCharBiomass(uniqueKey, fallbackName) {
+    const settings = loadBiomass();
+    if (settings.biomass[uniqueKey]) return settings.biomass[uniqueKey];
+    if (fallbackName && settings.biomass[fallbackName]) return settings.biomass[fallbackName];
+    
+    return [];
 }
 
 function saveBiomass(data) {
@@ -53,20 +69,31 @@ async function assimilateAudio(url) {
 
 function storeGeneSequence(charName, textContent, base64Data, originalDate) {
     const settings = loadBiomass();
-    if (!settings.biomass[charName]) settings.biomass[charName] = [];
+    const uniqueKey = getUniqueCharKey(); 
     
-    const list = settings.biomass[charName];
+    if (!settings.biomass[uniqueKey]) {
+        if (settings.biomass[charName]) {
+            settings.biomass[uniqueKey] = [...settings.biomass[charName]];
+        } else {
+            settings.biomass[uniqueKey] = [];
+        }
+    }
+    
+    const list = settings.biomass[uniqueKey];
+    
     if (list.length > 0) {
         const last = list[list.length - 1];
         if (last.text === textContent && last.data === base64Data) return false;
     }
 
-    settings.biomass[charName].push({
+    list.push({
         id: Date.now(),
         date: originalDate || new Date().toLocaleString(),
+        title: "", 
         text: textContent, 
         data: base64Data   
     });
+    
     saveBiomass(settings);
     return true;
 }
@@ -165,7 +192,6 @@ function playTrackByIndex(index) {
     isPlaying = true;
     updatePlayerUI();
     
-    // UI 高亮更新
     $(".hux-item").removeClass("playing");
     $(`.hux-item[data-id="${item.id}"]`).addClass("playing");
 }
@@ -185,7 +211,6 @@ function togglePlay() {
 }
 
 
-// --- 导出 ZIP 逻辑---
 
 function dataURItoBlob(dataURI) {
     try {
@@ -220,9 +245,12 @@ async function exportAsZip(charName, list) {
     list.forEach((item, index) => {
         const dateStr = item.date.replace(/[\/:]/g, "-").split(' ')[0]; 
         const rawText = item.text.replace(/<[^>]*>/g, "").trim();
-        const shortText = rawText.slice(0, 15).replace(/[\\/:*?"<>|]/g, "_"); 
+        let titleSafe = item.title ? item.title.replace(/[\\/:*?"<>|]/g, "_") : "";
+        if (!titleSafe) titleSafe = rawText.slice(0, 15).replace(/[\\/:*?"<>|]/g, "_");
         
-        textLog += `[Track ${index+1}] ${item.date}\nContent: ${rawText}\n`;
+        const displayTitle = item.title ? `[${item.title}]` : "";
+
+        textLog += `[Track ${index+1}] ${item.date} ${displayTitle}\nContent: ${rawText}\n`;
 
         if (item.data) {
             const blob = dataURItoBlob(item.data);
@@ -231,7 +259,7 @@ async function exportAsZip(charName, list) {
                 if (blob.type.includes("mp3")) ext = "mp3";
                 else if (blob.type.includes("ogg")) ext = "ogg";
                 
-                const fileName = `${dateStr}_${index}_${shortText}.${ext}`;
+                const fileName = `${dateStr}_${index}_${titleSafe}.${ext}`;
                 folder.file(fileName, blob);
                 textLog += `File: ${fileName}\n`;
                 audioCount++;
@@ -258,10 +286,10 @@ async function exportAsZip(charName, list) {
 
 function refreshInterface() {
     const context = getContext();
-    const currentChar = context.name2;
+    const currentChar = context.name2; 
+    const uniqueKey = getUniqueCharKey(); 
+    const fullList = getCharBiomass(uniqueKey, currentChar);
     const settings = loadBiomass();
-    const fullList = settings.biomass[currentChar] || [];
-    
     globalPlaylist = fullList.filter(item => item.data); 
 
     let $drawer = $(`#${DRAWER_ID}`);
@@ -293,7 +321,6 @@ function refreshInterface() {
             gap: 8px;
         }
         
-        /* 按钮统一样式 */
         .hux-btn {
             cursor: pointer;
             width: 32px; height: 32px;
@@ -301,13 +328,13 @@ function refreshInterface() {
             border-radius: 4px;
             background: var(--bg-2);
             border: 1px solid var(--hux-border);
-            color: var(--text-body); /* 图标颜色跟随主题 */
+            color: var(--text-body);
             transition: all 0.1s;
-            font-size: 1em; /* 图标大小 */
+            font-size: 1em;
         }
         .hux-btn:hover { 
             background: var(--hux-bg-hover); 
-            color: var(--hux-accent); /* 悬停时变色 */
+            color: var(--hux-accent);
         }
         .hux-btn.active { 
             background: var(--hux-accent); 
@@ -363,6 +390,12 @@ function refreshInterface() {
             flex-grow: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; 
             text-align: left; font-weight: 500;
         }
+        .hux-custom-title {
+            color: var(--hux-accent);
+            font-weight: bold;
+            margin-right: 5px;
+        }
+
         .hux-icon { font-size: 0.9em; opacity: 0.6; margin-left: auto; }
 
         .hux-body {
@@ -377,6 +410,7 @@ function refreshInterface() {
             margin-top: 8px; gap: 10px;
         }
         .hux-del { color: #ff6b6b; cursor: pointer; font-size: 0.8em; }
+        .hux-edit { color: var(--text-body); opacity:0.7; cursor: pointer; font-size: 0.8em; }
         .hux-play-one { color: var(--hux-accent); cursor: pointer; font-size: 0.85em; font-weight: bold; }
     `;
 
@@ -396,20 +430,25 @@ function refreshInterface() {
             [...fullList].reverse().forEach(item => {
                 const plainText = item.text.replace(/<[^>]*>/g, "").slice(0, 30);
                 const hasAudio = !!item.data;
-                const searchText = (item.text + " " + item.date).replace(/<[^>]*>/g, "").toLowerCase();
+                const itemTitle = item.title || "";
+                const searchText = (itemTitle + " " + item.text + " " + item.date).replace(/<[^>]*>/g, "").toLowerCase();
                 const shortDate = item.date.split(' ')[0] || "Unknown";
 
                 listHtml += `
                 <div class="hux-item ${hasAudio ? 'has-audio' : ''}" data-id="${item.id}" data-search="${searchText.replace(/"/g, '&quot;')}">
                     <div class="hux-header">
                         <span class="hux-date">${shortDate}</span>
-                        <span class="hux-preview">${plainText}</span>
+                        <span class="hux-preview">
+                            ${itemTitle ? `<span class="hux-custom-title">【${itemTitle}】</span>` : ''}
+                            ${plainText}
+                        </span>
                         <span class="hux-icon">${hasAudio ? '<i class="fa-solid fa-compact-disc"></i>' : '<i class="fa-regular fa-file-lines"></i>'}</span>
                     </div>
                     <div class="hux-body">
                         <div class="hux-text">${item.text}</div>
                         <div class="hux-actions">
                             ${hasAudio ? `<span class="hux-play-one" data-id="${item.id}"><i class="fa-solid fa-play"></i> 播放</span>` : ''}
+                            <span class="hux-edit" data-id="${item.id}"><i class="fa-solid fa-pen-to-square"></i> 标题</span>
                             <span class="hux-del" data-id="${item.id}"><i class="fa-solid fa-trash"></i> 删除</span>
                         </div>
                     </div>
@@ -449,7 +488,7 @@ function refreshInterface() {
                     </div>
 
                     <div class="hux-search-box">
-                        <input type="text" class="hux-search-input" placeholder="Search memories..." id="hux-search-bar">
+                        <input type="text" class="hux-search-input" placeholder="Search title, content or date..." id="hux-search-bar">
                     </div>
                     <div class="hux-list">
                         ${listHtml}
@@ -487,9 +526,30 @@ function refreshInterface() {
             e.stopPropagation();
             if (confirm("删除这条记忆？")) {
                 const id = $(this).data("id");
-                settings.biomass[currentChar] = settings.biomass[currentChar].filter(x => x.id !== id);
+                if (settings.biomass[uniqueKey]) {
+                    settings.biomass[uniqueKey] = settings.biomass[uniqueKey].filter(x => x.id !== id);
+                } else if (settings.biomass[currentChar]) {
+                    settings.biomass[currentChar] = settings.biomass[currentChar].filter(x => x.id !== id);
+                }
                 saveBiomass(settings);
                 refreshInterface();
+            }
+        });
+        
+        $drawer.find(".hux-edit").on("click", function(e) {
+            e.stopPropagation();
+            const id = $(this).data("id");
+            let targetList = settings.biomass[uniqueKey] || settings.biomass[currentChar];
+            if (!targetList) return;
+            
+            const item = targetList.find(x => x.id === id);
+            if (item) {
+                const newTitle = prompt("为这段记忆添加/修改标题：", item.title || "");
+                if (newTitle !== null) {
+                    item.title = newTitle.trim();
+                    saveBiomass(settings);
+                    refreshInterface();
+                }
             }
         });
 
@@ -519,7 +579,8 @@ function refreshInterface() {
         $drawer.find("#hux-export-txt").on("click", () => {
              let content = `=== ${currentChar} :: Memory Log ===\n\n`;
              fullList.forEach(item => {
-                 content += `[${item.date}]\n${item.text.replace(/<[^>]*>/g, "")}\n-------------------\n`;
+                 const titleStr = item.title ? `[${item.title}] ` : "";
+                 content += `[${item.date}] ${titleStr}\n${item.text.replace(/<[^>]*>/g, "")}\n-------------------\n`;
              });
              const blob = new Blob([content], { type: "text/plain" });
              const a = document.createElement("a");
@@ -544,14 +605,15 @@ function updatePlayerUI() {
     $btnPlay.html(isPlaying ? '<i class="fa-solid fa-pause"></i>' : '<i class="fa-solid fa-play"></i>');
     
     if (currentTrackIndex >= 0 && globalPlaylist[currentTrackIndex]) {
-        const text = globalPlaylist[currentTrackIndex].text.replace(/<[^>]*>/g, "").slice(0, 15);
+        const item = globalPlaylist[currentTrackIndex];
+        let text = item.title || item.text.replace(/<[^>]*>/g, "");
+        text = text.slice(0, 15);
         $status.text(`🎵 ${text}...`);
     } else {
         $status.text("💤 Ready...");
     }
 }
 
-// --- 🚀 启动 ---
 jQuery(async () => {
     const engage = () => {
         setTimeout(scanForOrganics, 500);
