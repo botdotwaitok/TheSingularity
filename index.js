@@ -1,15 +1,178 @@
 import { extension_settings, getContext } from "../../../extensions.js";
 import { saveSettingsDebounced, eventSource, event_types } from '../../../../script.js';
 
+// ============================================================================
+// 🛠️ 全局配置与状态
+// ============================================================================
 const SETTING_KEY = "singularity_biomass_storage";
-const DRAWER_ID = "singularity_biopod_interface";
-const GLOBAL_AUDIO_ID = "tts_audio"; 
+const DRAWER_ID = "merged_singularity_obsession";
+const CONTENT_ID = "merged_plugin_content";
 const defaultSettings = { biomass: {} };
 
+// Singularity 播放器状态
+let globalPlaylist = [];
+let currentTrackIndex = -1;
+let isRandomMode = false;
+let audioPlayer = new Audio();
+let isPlaying = false;
+audioPlayer.onended = () => playNextTrack();
+
+// 加载 JSZip (用于导出)
 if (typeof window.JSZip === 'undefined') {
-    $.getScript("https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js")
-        .done(() => console.log("[Singularity] JSZip module loaded."))
-        .fail(() => console.error("[Singularity] Failed to load JSZip."));
+    $.getScript("https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js");
+}
+
+// ============================================================================
+// 🎨 样式注入
+// ============================================================================
+const cssStyle = `
+    :root { 
+        --hux-accent: var(--smart-theme-quote-color, #90caf9); 
+        --hux-bg-card: var(--bg-2, #1e1e1e); 
+        --hux-border: var(--border-color, #333); 
+    }
+    
+    /* --- 容器与主入口 --- */
+    .merged-content-wrapper { 
+        padding: 15px; 
+        display: flex; 
+        flex-direction: column; 
+        gap: 15px; 
+        align-items: center; 
+    }
+    
+    /* --- Singularity 列表样式 --- */
+    .hux-controls { 
+        padding: 10px; display: flex; align-items: center; gap: 8px; 
+        background: var(--bg-1, #1e1e1e);
+    }
+    .hux-btn { 
+        cursor: pointer; width: 32px; height: 32px; display: flex; align-items: center; justify-content: center; 
+        border-radius: 4px; background: rgba(255,255,255,0.1); 
+        border: 1px solid var(--hux-border, #333); color: var(--text-body, #e0e0e0); transition: 0.1s; 
+    }
+    .hux-btn:hover { background: var(--hux-accent, #90caf9); color: var(--bg-0, #121212); border-color: var(--hux-accent); }
+    .hux-list { padding: 8px; background: var(--bg-0, #121212); }
+    
+    .hux-item { 
+        background: var(--hux-bg-card, #1e1e1e); border: 1px solid var(--hux-border, #333); 
+        margin-bottom: 6px; border-radius: 4px; padding: 5px; 
+    }
+    .hux-item.playing { border-left: 4px solid var(--hux-accent); background: var(--bg-3, #2a2a2a); }
+    
+    .hux-header { padding: 8px 10px; cursor: pointer; display: flex; align-items: center; gap: 10px; font-size: 0.9em; }
+    .hux-preview { flex-grow: 1; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-weight: 500; }
+    .hux-body { display: none; padding: 10px; border-top: 1px dashed var(--hux-border); font-size: 0.9em; opacity: 0.9; }
+    .hux-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 5px; }
+    
+    .hux-assimilate-btn {
+        cursor: pointer; opacity: 0.6; margin-left: 8px; display: inline-block; 
+        transition: all 0.2s ease; font-size: 2em; vertical-align: middle; color: var(--SmartThemeBodyColor, #ccc);
+    }
+    .hux-assimilate-btn:hover { opacity: 1; transform: scale(1.2); color: var(--hux-accent); }
+    
+    .obs-big-btn { 
+        width: 100%; max-width: 300px; padding: 15px; 
+        background: linear-gradient(135deg, #2c0b0e, #5a1a1a); 
+        color: #ff6b6b; border: 1px solid #ff6b6b; border-radius: 8px;
+        font-size: 1.1em; font-weight: bold; cursor: pointer; transition: transform 0.2s;
+        box-shadow: 0 4px 15px rgba(0,0,0,0.3); text-align: center;
+        /* 防止遮挡 */
+        position: relative; z-index: 9999; 
+        user-select: none; -webkit-tap-highlight-color: transparent;
+    }
+    .obs-big-btn:hover { transform: scale(1.02); filter: brightness(1.2); }
+
+    /* --- 🔥 全屏 Modal --- */
+    .obsession-modal {
+        position: fixed; 
+        top: 0; 
+        left: 0; 
+        width: 100vw;
+        height: 100vh;      
+        height: 100dvh;     
+        background: var(--bg-0, #121212) !important;
+        z-index: 2147483647; 
+        display: flex; 
+        flex-direction: column;
+        
+        color: var(--text-body, #e0e0e0); 
+        font-family: var(--font-body, sans-serif);
+        animation: fadeIn 0.2s ease-out;
+        overscroll-behavior: contain;
+    }
+    
+    @keyframes fadeIn { from { opacity: 0; } to { opacity: 1; } }
+    
+    .obsession-header { 
+        background: var(--bg-1, #1e1e1e) !important; 
+        padding: 15px; 
+        border-bottom: 1px solid #5a1a1a; 
+        display: flex; 
+        align-items: center; 
+        justify-content: space-between;
+        flex-shrink: 0; 
+        min-height: 60px; 
+    }
+    
+    .obsession-body { 
+        flex: 1; 
+        padding: 20px; 
+        overflow-y: scroll; 
+        -webkit-overflow-scrolling: touch;
+        background: var(--bg-0, #121212);
+        padding-bottom: 100px;
+    }
+    
+    .stat-card { background: rgba(255,255,255,0.03); border: 1px solid rgba(255,255,255,0.05); border-radius: 8px; padding: 15px; margin-bottom: 15px; }
+    .word-tag { background: #333; padding: 2px 8px; border-radius: 4px; font-size: 0.85em; display:inline-block; margin:2px; }
+    .search-result-item { background: var(--bg-1); border-left: 3px solid #555; padding: 15px; margin-bottom: 15px; border-radius: 0 6px 6px 0; }
+    .search-result-item.is-ai { border-left-color: #ff6b6b; background: rgba(255, 107, 107, 0.05); }
+    .highlight-text { color: #ffeb3b; font-weight: bold; background: rgba(255, 235, 59, 0.1); }
+    .singularity-collect-btn { cursor: pointer; margin-left: 10px; opacity: 0.5; font-size: 1.2em; }
+
+    /* 🔥 移动端补丁 */
+    @media (max-width: 768px) {
+        background: var(--bg-0, transparent) !important;      
+        .obsession-modal {
+background: var(--bg-0, transparent) !important; 
+            bottom: 0 !important; right: 0 !important;
+        }
+        
+        .obsession-header {
+            flex-wrap: wrap; 
+            padding: 10px;
+            gap: 10px;
+        }
+        
+        .obsession-body {
+            overflow-y: auto !important; 
+            height: auto !important;
+            -webkit-overflow-scrolling: touch !important;
+        }
+        
+        .hux-btn, .obs-big-btn, #close-obsession, #close-singularity {
+            min-height: 44px; 
+            min-width: 44px;
+        }
+    }
+`;
+
+if ($('#merged-plugin-style').length === 0) {
+    $('head').append(`<style id="merged-plugin-style">${cssStyle}</style>`);
+}
+
+// ============================================================================
+// 🧠 数据管理
+// ============================================================================
+function loadSettings() {
+    if (!extension_settings[SETTING_KEY]) extension_settings[SETTING_KEY] = defaultSettings;
+    return extension_settings[SETTING_KEY];
+}
+
+function saveSettings(data) {
+    extension_settings[SETTING_KEY] = data;
+    saveSettingsDebounced();
 }
 
 function getUniqueCharKey() {
@@ -19,611 +182,766 @@ function getUniqueCharKey() {
     }
     return context.name2;
 }
+// ============================================================================
+// 🚑 数据迁移与上传 (核心修复)
+// ============================================================================
 
-function loadBiomass() {
-    if (!extension_settings[SETTING_KEY]) {
-        extension_settings[SETTING_KEY] = defaultSettings;
-    }
-    return extension_settings[SETTING_KEY];
-}
+// 1. 通用上传函数 (使用 jQuery ajax 自动处理 CSRF token)
+async function uploadToSillyTavern(blob, filename) {
+    const reader = new FileReader();
+    const base64Data = await new Promise((resolve) => {
+        reader.onloadend = () => resolve(reader.result.split(',')[1]);
+        reader.readAsDataURL(blob);
+    });
 
-function getCharBiomass(uniqueKey, fallbackName) {
-    const settings = loadBiomass();
-    if (settings.biomass[uniqueKey]) return settings.biomass[uniqueKey];
-    if (fallbackName && settings.biomass[fallbackName]) return settings.biomass[fallbackName];
-    
-    return [];
-}
-
-function saveBiomass(data) {
-    extension_settings[SETTING_KEY] = data;
-    saveSettingsDebounced();
-}
-
-async function assimilateAudio(url) {
-    if (!url) return null;
-    if (url.startsWith("data:")) return url;
-
-    if (!url.startsWith("http") && !url.startsWith("blob:") && !url.startsWith("data:")) {
-        const baseUrl = window.location.origin + window.location.pathname;
-        const cleanPath = url.startsWith("/") ? url.slice(1) : url;
-        const cleanBase = baseUrl.endsWith("/") ? baseUrl : baseUrl + "/";
-        url = cleanBase + cleanPath;
-    }
-
-    try {
-        const response = await fetch(url);
-        if (!response.ok) throw new Error(`Status: ${response.status}`);
-        const blob = await response.blob();
-        return new Promise((resolve, reject) => {
-            const reader = new FileReader();
-            reader.onloadend = () => resolve(reader.result);
-            reader.onerror = reject;
-            reader.readAsDataURL(blob);
+    return new Promise((resolve, reject) => {
+        $.ajax({
+            url: '/api/files/upload',
+            type: 'POST',
+            contentType: 'application/json',
+            data: JSON.stringify({ name: filename, data: base64Data }),
+            success: function(result) {
+                console.log("[Singularity] Upload Success:", result);
+                resolve(result.path || `user/files/${filename}`);
+            },
+            error: function(xhr, status, err) {
+                console.error("[Singularity] Upload Failed:", xhr.responseText);
+                reject(new Error(`Upload failed: ${xhr.status} ${err}`));
+            }
         });
-    } catch (err) {
-        console.warn("[Singularity] Audio capture failed:", err);
-        return null;
-    }
+    });
 }
 
-function storeGeneSequence(charName, textContent, base64Data, originalDate) {
-    const settings = loadBiomass();
-    const uniqueKey = getUniqueCharKey(); 
+// 2. 核心迁移逻辑：将 Blob 数据转存为服务器文件
+async function migrateLegacyData() {
+    if (!confirm("⚠️ 准备好迁移数据了吗？\n\n这会将所有旧的音频数据上传为独立文件。\n过程可能需要几秒钟，请勿关闭页面。")) return;
+
+    // 使用当前的加载函数
+    const settings = loadSettings(); 
+    let migratedCount = 0;
     
-    if (!settings.biomass[uniqueKey]) {
-        if (settings.biomass[charName]) {
-            settings.biomass[uniqueKey] = [...settings.biomass[charName]];
-        } else {
-            settings.biomass[uniqueKey] = [];
+    toastr.info("正在迁移数据...", "Singularity");
+
+    // 遍历所有角色
+    for (const charKey in settings.biomass) {
+        const list = settings.biomass[charKey];
+        if (!Array.isArray(list)) continue;
+
+        for (let i = 0; i < list.length; i++) {
+            const item = list[i];
+            if (item.data && !item.path) {
+                if (item.data.startsWith("blob:")) {
+                    delete item.data; 
+                    continue; 
+                }
+                
+                try {
+                    // 尝试获取音频流
+                    const fetchRes = await fetch(item.data);
+                    const blob = await fetchRes.blob();
+                    
+                    let ext = "wav";
+                    if (blob.type.includes("mp3")) ext = "mp3";
+                    
+                    const safeDate = Date.now() + i;
+                    const filename = `Singularity_Legacy_${safeDate}.${ext}`;
+                    const newPath = await uploadToSillyTavern(blob, filename);
+                    
+                    item.path = newPath;
+                    delete item.data; 
+                    
+                    migratedCount++;
+                } catch (e) {
+                    console.error("Migration skipped for item:", item, e);
+                }
+            }
         }
     }
-    
-    const list = settings.biomass[uniqueKey];
-    
-    if (list.length > 0) {
-        const last = list[list.length - 1];
-        if (last.text === textContent && last.data === base64Data) return false;
-    }
 
-    list.push({
-        id: Date.now(),
-        date: originalDate || new Date().toLocaleString(),
-        title: "", 
-        text: textContent, 
-        data: base64Data   
-    });
-    
-    saveBiomass(settings);
-    return true;
-}
-
-function scanForOrganics() {
-    $(".mes").each(function() {
-        const $mes = $(this);
-        if ($mes.find(".hux-assimilate-btn").length > 0) return;
-
-        let $targetArea = $mes.find(".mes_buttons"); 
-        if ($targetArea.length === 0) $targetArea = $mes.find(".timestamp");
-
-        const $btn = $(`<div class="hux-assimilate-btn" title="点击同化音频" style="
-            display: inline-block; cursor: pointer; margin: 0 8px; opacity: 0.3; 
-            font-size: 1.1em; transition: all 0.2s; filter: grayscale(100%);
-        ">👁️‍🗨️</div>`);
+    if (migratedCount > 0) {
+        saveSettings(settings); 
+        if ($('#singularity-modal').length > 0) {
+            const searchVal = $('#singularity-search').val();
+            renderSingularityList(searchVal);
+        }
         
-        $btn.hover(
-            function() { $(this).css({opacity: 0.8, transform: "scale(1.1)", filter: "grayscale(0%)"}); },
-            function() { $(this).css({opacity: 0.3, transform: "scale(1.0)", filter: "grayscale(100%)"}); }
-        );
+        toastr.success(`成功迁移 ${migratedCount} 条音频！`, "完成");
+    } else {
+        toastr.info("没有发现需要迁移的数据。", "Singularity");
+    }
+}
 
-        if ($targetArea.length > 0) $targetArea.append($btn);
-        else $mes.find(".mes_text").after($btn);
+// ============================================================================
+// 🖥️ 主界面渲染
+// ============================================================================
+function refreshInterface() {
+    let $drawer = $(`#${DRAWER_ID}`);
+    
+    if ($drawer.length === 0) {
+        $drawer = $(`<div id="${DRAWER_ID}" class="inline-drawer"></div>`);
+        $("#extensions_settings").append($drawer);
+
+        const html = `
+            <div class="inline-drawer-header inline-drawer-toggle" style="cursor: pointer; user-select: none; -webkit-tap-highlight-color: transparent;">
+                <b>👁️‍🗨️ The Singularity</b>
+                <div class="inline-drawer-icon fa-solid fa-circle-chevron-right"></div>
+            </div>
+            
+            <div id="${CONTENT_ID}" class="merged-content-wrapper" style="display:none; width:100%; flex-direction:column; gap:10px;">
+                
+                <div class="obs-big-btn" 
+                     onclick="window.openSingularityGlobal(event)" 
+                     style="background: linear-gradient(135deg, #1c1c1c, #3a3a3a); color: var(--hux-accent); border-color: var(--hux-accent); position: relative; z-index: 1000; cursor: pointer;">
+                    
+                    <div style="font-size: 1.5em; margin-bottom: 5px; pointer-events: none;">
+                        <i class="fa-solid fa-brain"></i>
+                    </div>
+                    <div style="pointer-events: none;">
+                        记忆回廊<br><span style="font-size:0.7em; opacity:0.7">Singularity Storage</span>
+                    </div>
+                </div>
+
+                <div class="obs-big-btn" 
+                     onclick="window.openObsessionGlobal(event)"
+                     style="position: relative; z-index: 1000; cursor: pointer;">
+                     
+                    <div style="font-size: 1.5em; margin-bottom: 5px; pointer-events: none;">
+                        <i class="fa-solid fa-spider"></i>
+                    </div>
+                    <div style="pointer-events: none;">
+                        执念数据<br><span style="font-size:0.7em; opacity:0.7">Obsession Analytics</span>
+                    </div>
+                </div>
+
+            </div>
+        `;
+        $drawer.html(html);
+
+        $drawer.find(".inline-drawer-toggle").off('click touchstart').on("click touchstart", function(e) {
+            if (e.type === 'touchstart') $(this).data('ts', Date.now());
+            if (e.type === 'click' && $(this).data('ts') && Date.now() - $(this).data('ts') < 500) return;
+
+            e.preventDefault(); 
+            const $wrapper = $(`#${CONTENT_ID}`);
+            const $icon = $(this).find(".inline-drawer-icon");
+
+            if ($wrapper.is(":visible")) {
+                $wrapper.slideUp(200, () => $icon.removeClass("fa-circle-chevron-down").addClass("fa-circle-chevron-right"));
+            } else {
+                $wrapper.css("display", "flex").hide().slideDown(200, function(){
+                    $(this).css("display", "flex");
+                    $icon.removeClass("fa-circle-chevron-right").addClass("fa-circle-chevron-down");
+                });
+            }
+        });
+    }
+}
+
+// ============================================================================
+// 🧠 Singularity 全屏模态框
+// ============================================================================
+function showSingularityModal() {
+    if ($('#singularity-modal').length > 0) return;
+
+    const uniqueKey = getUniqueCharKey();
+    const context = getContext();
+    const charName = context.name2 || "Target";
+
+    const modalHtml = `
+    <div class="obsession-modal" id="singularity-modal">
+        <div class="obsession-header">
+            <div style="font-size:1.2em; font-weight:bold; color:var(--hux-accent); white-space:nowrap; margin-right:15px;">
+                🧠 Singularity: ${charName}
+            </div>
+            
+            <div style="flex-grow:1; max-width:500px; margin:0 10px;">
+                <input type="text" id="singularity-search" placeholder="Search memories..." 
+                       style="width:100%; padding:8px 15px; border-radius:20px; border:1px solid #555; background:rgba(0,0,0,0.3); color:white;">
+            </div>
+
+            <div class="hux-controls" style="background: transparent; border: none; padding:0; gap:6px; margin: 0 10px; flex-shrink: 0;">
+                <div class="hux-btn" id="hux-play-btn"><i class="fa-solid fa-play"></i></div>
+                <div class="hux-btn" id="hux-next-btn"><i class="fa-solid fa-forward-step"></i></div>
+                
+                <div class="hux-btn" id="hux-migrate-btn" title="迁移旧数据" style="color:#ffca28; border-color:#ffca28;">
+                    <i class="fa-solid fa-recycle"></i>
+                </div>
+
+                <div class="hux-btn" id="hux-export" title="导出备份"><i class="fa-solid fa-file-zipper"></i></div>
+            </div>
+            
+            <div class="hux-btn" id="close-singularity" style="width:auto; padding:0 15px; border-color:transparent;">EXIT</div>
+        </div>
+        <div class="obsession-body" id="singularity-list-area" style="padding: 10px 20px;"></div>
+    </div>`;
+
+    $('body').append(modalHtml);
+    
+    $('#singularity-modal').css({ 'background-color': '#121212', 'background': '#121212' });
+    renderSingularityList();
+
+    $('#close-singularity').on('click', () => $('#singularity-modal').remove());
+    
+    const $modal = $('#singularity-modal');
+    $modal.find("#hux-play-btn").on("click", togglePlay);
+    $modal.find("#hux-next-btn").on("click", playNextTrack);
+    $modal.find("#hux-export").on("click", () => exportAsZip(uniqueKey, loadSettings().biomass[uniqueKey] || []));
+    
+    $modal.find("#hux-migrate-btn").on("click", migrateLegacyData);
+    
+    $modal.find('#singularity-search').on('input', function() {
+        renderSingularityList($(this).val());
+    });
+    
+    if(isPlaying) updatePlayerUI();
+}
+
+
+function renderSingularityList(filterText = "") {
+    const $container = $("#singularity-list-area");
+    if ($container.length === 0) return;
+
+    const settings = loadSettings();
+    const uniqueKey = getUniqueCharKey();
+    const fallbackName = getContext().name2;
+    
+    let list = [];
+    if (settings.biomass && settings.biomass[uniqueKey]) list = settings.biomass[uniqueKey];
+    else if (fallbackName && settings.biomass && settings.biomass[fallbackName]) list = settings.biomass[fallbackName];
+    
+    let fullList = list.filter(item => item && typeof item === 'object');
+
+    if (filterText) {
+        const lowerFilter = filterText.toLowerCase();
+        fullList = fullList.filter(item => {
+            const t = (item.title || "").toLowerCase();
+            const c = (item.text || "").replace(/<[^>]*>/g, "").toLowerCase();
+            return t.includes(lowerFilter) || c.includes(lowerFilter);
+        });
+    }
+
+    globalPlaylist = fullList.filter(item => (item.data && !item.data.startsWith('blob:')) || item.path);
+
+    let listHtml = '';
+    if (fullList.length === 0) {
+        listHtml = `<div style="padding:50px; text-align:center; opacity:0.5; font-size:1.2em;">
+            <i class="fa-solid fa-filter" style="font-size:3em; margin-bottom:20px;"></i><br>
+            ${filterText ? "未找到匹配的记忆碎片" : "暂无记忆样本。<br>请在聊天记录中点击 👁️‍🗨️ 进行采集。"}
+        </div>`;
+    } else {
+        [...fullList].reverse().forEach(item => {
+            const hasAudio = !!(item.data || item.path); 
+            const plainText = item.text.replace(/<[^>]*>/g, "").slice(0, 60);
+            
+            let displayTitle = item.title ? `【${item.title}】` : '';
+            let displayText = plainText;
+
+            listHtml += `
+            <div class="hux-item ${hasAudio ? 'has-audio' : ''}" data-id="${item.id}" style="max-width: 900px; margin: 0 auto 10px auto;">
+                <div class="hux-header">
+                    <span style="opacity:0.5; font-size:0.8em; min-width:80px;">${item.date.split(' ')[0] || "Date"}</span>
+                    <span class="hux-preview">
+                        ${displayTitle ? `<span style="color:var(--hux-accent)">${displayTitle}</span>` : ''} ${displayText}
+                    </span>
+                    <span>${hasAudio ? '<i class="fa-solid fa-music"></i>' : '<i class="fa-solid fa-align-left"></i>'}</span>
+                </div>
+                <div class="hux-body">
+                    <div style="white-space: pre-wrap; margin-bottom:10px;">${item.text}</div>
+                    <div class="hux-actions">
+                        ${hasAudio ? `<div class="hux-btn play-one" data-id="${item.id}" title="播放"><i class="fa-solid fa-play"></i></div>` : ''}
+                        <div class="hux-btn edit-item" data-id="${item.id}" title="编辑标题"><i class="fa-solid fa-pen"></i></div>
+                        <div class="hux-btn del-item" data-id="${item.id}" title="删除"><i class="fa-solid fa-trash"></i></div>
+                    </div>
+                </div>
+            </div>`;
+        });
+    }
+
+    $container.html(listHtml);
+
+    $container.find(".hux-header").on("click", function() { $(this).next(".hux-body").slideToggle(150); });
+    $container.find(".play-one").on("click", function(e) {
+        e.stopPropagation();
+        const index = globalPlaylist.findIndex(x => x.id === $(this).data("id"));
+        if (index !== -1) playTrackByIndex(index);
+    });
+    $container.find(".del-item").on("click", function(e){
+        e.stopPropagation();
+        if(confirm("移除此记忆？")) {
+            settings.biomass[uniqueKey] = settings.biomass[uniqueKey].filter(x => x.id !== $(this).data("id"));
+            saveSettings(settings);
+            renderSingularityList($("#singularity-search").val()); 
+        }
+    });
+    $container.find(".edit-item").on("click", function(e){
+        e.stopPropagation();
+        const item = settings.biomass[uniqueKey].find(x => x.id === $(this).data("id"));
+        if(item) {
+            const t = prompt("标题:", item.title);
+            if(t !== null) { 
+                item.title = t; 
+                saveSettings(settings); 
+                renderSingularityList($("#singularity-search").val()); 
+            }
+        }
+    });
+
+    if (isPlaying && currentTrackIndex !== -1 && globalPlaylist[currentTrackIndex]) {
+        $(`.hux-item[data-id="${globalPlaylist[currentTrackIndex].id}"]`).addClass("playing");
+    }
+}
+// ============================================================================
+// 🕷️ Obsession 全屏模态框
+// ============================================================================
+function showObsessionModal() {
+    $('#obsession-modal').remove(); 
+    const context = getContext();
+    const charName = context.name2 || "Target";
+    
+    const modalHtml = `
+    <div class="obsession-modal" id="obsession-modal">
+        <div class="obsession-header">
+            <div style="font-size:1.2em; font-weight:bold; color:#ff6b6b;">🕷️ The Obsession: ${charName}</div>
+            <div style="flex-grow:1; max-width:500px; margin:0 20px;">
+                <input type="text" id="obs-search" placeholder="搜索记忆碎片..." style="width:100%; padding:8px 15px; border-radius:20px; border:1px solid #555; background:rgba(0,0,0,0.3); color:white;">
+            </div>
+            <div class="hux-btn" id="close-obsession" style="width:auto; padding:0 15px;">EXIT</div>
+        </div>
+        <div class="obsession-body" id="obs-body-content"></div>
+    </div>`;
+
+    $('body').append(modalHtml);
+    
+    $('#obsession-modal').css({
+        'background-color': '#121212',
+        'background': '#121212'
+    });
+    
+    renderObsessionStats(context);
+    $('#close-obsession').on('click', () => $('#obsession-modal').remove());
+    
+    let timeout;
+    $('#obs-search').on('input', function() {
+        const val = $(this).val();
+        clearTimeout(timeout);
+        timeout = setTimeout(() => {
+            if(!val.trim()) renderObsessionStats(context);
+            else renderObsessionSearch(val, context);
+        }, 300);
     });
 }
 
-$(document).on("click", ".hux-assimilate-btn", async function(e) {
-    e.preventDefault(); e.stopPropagation();
-    const $icon = $(this);
-    const $mes = $icon.closest(".mes");
-    
-    $icon.text("⏳").css({opacity: 1});
-    
-    const charName = $mes.attr("ch_name") || getContext().name2;
-    const fullText = $mes.find(".mes_text").html(); 
-    let msgDate = $mes.find(".timestamp").text().trim();
-    if (!msgDate) msgDate = $mes.attr("timestamp");
+// ============================================================================
+// 📊 统计生成核心算法 
+// ============================================================================
+function calculateStats(chatData) {
+    let stats = {
+        totalMsgs: chatData.chat.length,
+        userWords: 0, aiWords: 0, 
+        wordMap: {},
+        hours: new Array(24).fill(0), 
+        dates: {}, 
+        startDate: "Unknown"
+    };
 
-    let $audio = $mes.find("audio");
-    let audioSrc = $audio.attr("src");
-    if (!audioSrc) {
-        const globalAudio = document.getElementById(GLOBAL_AUDIO_ID);
-        if (globalAudio && globalAudio.src && globalAudio.src !== window.location.href) {
-            audioSrc = globalAudio.src;
+const stopWords = new Set([
+        "the", "and", "a", "to", "of", "it", "in", "is", "you", "i", "me", "my", "that", "he", "she", "his", "her", "him", "with", "for", "on", "as", "at", "but", "be", "not", "what", "so", "have", "do", "this", "from", "by", "or",
+        "just", "about", "very", "would", "could", "should", "really", "something", "anything", "nothing", 
+        "back", "down", "over", "there", "here", "then", "now", "when", "where", "why", "how", "out", "up", "all", "some", "any", "no", "yes", "oh", "well", "like", "one", "can", "want", "know", "think", "get", "go", "see",
+        "are", "your", "will", "was", "has", "did", "does", "don", 
+        "look", "make", "tell", "need", "let",
+        "because", "they", "them", "who", "only", "more", "too", "right", "time", "were",
+        "mode", "sandbox", 
+        "我", "你", "他", "她", "它", "的", "了", "在", "是", "就", "都", "而", "及", "与", "着", "个", "这", "那", "有", "也", "很", "啊", "吧", "呢", "吗", "么", "去", "来", "说", "着",
+        "user", "char", "name"
+    ]);
+
+    if (chatData.charName) stopWords.add(chatData.charName.toLowerCase());
+    if (chatData.userName) stopWords.add(chatData.userName.toLowerCase());
+
+    chatData.chat.forEach(msg => {
+        let rawText = (msg.mes || "");
+        
+        try {
+            let dStr = msg.send_date || msg.date;
+            
+            if (dStr && typeof dStr === "string") {
+                dStr = dStr.replace(/[年月]/g, '/').replace(/[日]/g, '');
+                dStr = dStr.replace(/(\d)(am|pm)/gi, '$1 $2');
+                let dateObj = new Date(dStr);
+
+                if (!isNaN(dateObj.getTime())) {
+                    if (stats.startDate === "Unknown" || dateObj < new Date(stats.startDate)) {
+                        stats.startDate = dateObj.toLocaleDateString();
+                    }
+                    let h = dateObj.getHours();
+                    if (h >= 0 && h < 24) stats.hours[h]++;
+
+                    let m = dateObj.getMonth() + 1;
+                    let d = dateObj.getDate();
+                    let dateKey = `${m.toString().padStart(2, '0')}-${d.toString().padStart(2, '0')}`;
+                    stats.dates[dateKey] = (stats.dates[dateKey] || 0) + 1;
+                }
+            }
+        } catch (e) { 
         }
-    }
-    
-    let base64Data = null;
-    if (audioSrc && audioSrc !== "undefined") {
-        toastr.info("正在提取音频...", "Singularity");
-        base64Data = await assimilateAudio(audioSrc);
-    }
 
-    const success = storeGeneSequence(charName, fullText, base64Data, msgDate);
+        let cleanBaseText = rawText.replace(/<[^>]+>/g, "").replace(/\{\{[^}]+\}\}/g, "");
+        if (msg.is_user) stats.userWords += cleanBaseText.length;
+        else stats.aiWords += cleanBaseText.length;
 
-    if (success) {
-        $icon.text(base64Data ? "🧬" : "📝").css("color", base64Data ? "#b19cd9" : "#a8d8ea"); 
-        toastr.success("样本已采集", "Singularity");
-        refreshInterface(); 
-        setTimeout(() => {
-            $icon.text("👁️‍🗨️").css("color", "").css("opacity", 0.3);
-        }, 3000);
-    } else {
-        $icon.text("⚠️");
-        setTimeout(() => $icon.text("👁️‍🗨️"), 2000);
-    }
-});
+        const quoteRegex = /["“]([^"”]*?)["”]/g;
+        let match;
+        let dialogueContent = "";
+        while ((match = quoteRegex.exec(cleanBaseText)) !== null) { dialogueContent += match[1] + " "; }
+        if (!dialogueContent.trim()) return;
+        
+        dialogueContent.toLowerCase().match(/[\u4e00-\u9fa5]{2,}|[a-zA-Z]{3,}/g)?.forEach(t => {
+            if (!stopWords.has(t)) stats.wordMap[t] = (stats.wordMap[t] || 0) + 1;
+        });
+    });
 
+    const minFrequency = stats.totalMsgs > 300 ? 3 : 2;
+    stats.topWords = Object.entries(stats.wordMap)
+        .filter(([_, c]) => c >= minFrequency)
+        .sort((a, b) => b[1] - a[1])
+        .slice(0, 30);
 
-let globalPlaylist = [];
-let currentTrackIndex = -1;
-let isRandomMode = false;
-let audioPlayer = new Audio();
-let isPlaying = false;
-
-audioPlayer.onended = () => playNextTrack();
-
-function playNextTrack() {
-    if (globalPlaylist.length === 0) return;
-    if (isRandomMode) {
-        currentTrackIndex = Math.floor(Math.random() * globalPlaylist.length);
-    } else {
-        currentTrackIndex++;
-        if (currentTrackIndex >= globalPlaylist.length) currentTrackIndex = 0;
-    }
-    playTrackByIndex(currentTrackIndex);
+    return stats;
 }
 
+// ============================================================================
+// 📈 SVG 图表生成器 
+// ============================================================================
+function generateSVGChart(data, type = "bar", color = "#ff6b6b", height = 60) {
+    if (!data || data.length === 0) return "";
+    
+    const maxVal = Math.max(...data) || 1;
+    const width = 100; // viewbox units
+    const step = width / (data.length - 1 || 1);
+    
+    let svgContent = "";
+
+    if (type === "bar") {
+        const barWidth = (width / data.length) * 0.8;
+        data.forEach((val, i) => {
+            const h = (val / maxVal) * height;
+            const x = (width / data.length) * i;
+            const y = height - h;
+            const opacity = 0.3 + (val / maxVal) * 0.7; 
+            svgContent += `<rect x="${x}" y="${y}" width="${barWidth}" height="${h}" fill="${color}" rx="1" style="opacity:${opacity}"/>`;
+        });
+    } else if (type === "line") {
+        let points = "";
+        let areaPoints = `0,${height} `; 
+        
+        data.forEach((val, i) => {
+            const h = (val / maxVal) * height; 
+            const x = i * step;
+            const y = height - h;
+            points += `${x},${y} `;
+            areaPoints += `${x},${y} `;
+        });
+        
+        areaPoints += `${width},${height}`; 
+        
+        svgContent += `<polygon points="${areaPoints}" fill="${color}" style="opacity:0.15"/>`;
+        svgContent += `<polyline points="${points}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>`;
+        const maxIdx = data.indexOf(maxVal);
+        const maxX = maxIdx * step;
+        const maxY = height - ((maxVal / maxVal) * height);
+        svgContent += `<circle cx="${maxX}" cy="${maxY}" r="2" fill="#fff" stroke="${color}" stroke-width="1"/>`;
+    }
+
+    return `<svg viewBox="0 0 100 ${height}" preserveAspectRatio="none" style="width:100%; height:${height}px; overflow:visible;">${svgContent}</svg>`;
+}
+
+
+// ============================================================================
+// 🕷️ 渲染 Obsession 统计面板 
+// ============================================================================
+
+function renderObsessionStats(context) {
+    const stats = calculateStats({
+        chat: context.chat || [],
+        charName: context.name2, 
+        userName: context.name1 
+    });
+
+    let cloudHtml = stats.topWords.map(([w,c]) => 
+        `<span class="word-tag" title="出现 ${c} 次">${w} <small style="opacity:1; color:#ffffff; font-weight:bold; margin-left:2px;">${c}</small></span>`
+    ).join("");
+    if (!cloudHtml) cloudHtml = `<div style="opacity:0.5; padding:20px; text-align:center;">暂无足够数据生成词云</div>`;
+
+    const totalWords = (stats.userWords + stats.aiWords) || 1;
+    const aiPercent = (stats.aiWords / totalWords) * 100;
+    const userPercent = 100 - aiPercent;
+    const userDisplay = context.name1 || "User";
+    const charDisplay = context.name2 || "Char";
+    const hoursData = stats.hours; 
+    
+    const sortedDates = Object.keys(stats.dates).sort();
+    const recentDates = sortedDates.slice(-30); 
+    const trendData = recentDates.map(d => stats.dates[d]);
+    
+    let startLabel = "- / -";
+    let endLabel = "- / -";
+    if (recentDates.length > 0) {
+        startLabel = recentDates[0]; 
+        endLabel = recentDates[recentDates.length - 1]; 
+    }
+
+    const chart24h = generateSVGChart(hoursData, "bar", "#90caf9", 50);
+    const chartTrend = generateSVGChart(trendData, "line", "#ff6b6b", 50);
+
+    const html = `
+        <div style="max-width:800px; margin:0 auto; display:flex; flex-direction:column; gap:15px;">
+            
+            <div class="stat-card">
+                <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
+                    <h3 style="margin:0;">📊 双方输出统计</h3>
+                    <span style="font-size:0.8em; opacity:0.6;">First Contact: ${stats.startDate}</span>
+                </div>
+                <div style="display:flex; justify-content:space-between; font-size:1.1em; margin-bottom:8px; font-weight:bold;">
+                    <span style="color:#90caf9">${userDisplay}: <span style="font-family:monospace">${stats.userWords}</span> 字</span>
+                    <span style="color:#ff6b6b">${charDisplay}: <span style="font-family:monospace">${stats.aiWords}</span> 字</span>
+                </div>
+                <div style="background:rgba(255,255,255,0.1); height:14px; border-radius:7px; overflow:hidden; display:flex;">
+                    <div style="height:100%; width:${userPercent}%; background:#90caf9;" title="${userDisplay}: ${userPercent.toFixed(1)}%"></div>
+                    <div style="height:100%; width:${aiPercent}%; background:#ff6b6b;" title="${charDisplay}: ${aiPercent.toFixed(1)}%"></div>
+                </div>
+            </div>
+
+            <div class="stat-card" style="position:relative;">
+                <h3 style="margin:0 0 15px 0;">⏳ 时间突触</h3>
+                
+                <div style="margin-bottom:20px;">
+                    <div style="font-size:0.85em; opacity:0.7; margin-bottom:5px; display:flex; justify-content:space-between;">
+                        <span>高峰期</span>
+                        <span>峰值: <b style="color:#90caf9">${hoursData.indexOf(Math.max(...hoursData))}点</b></span>
+                    </div>
+                    ${chart24h}
+                    <div style="display:flex; justify-content:space-between; font-size:0.7em; opacity:0.4; margin-top:2px;">
+                        <span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>23:59</span>
+                    </div>
+                </div>
+
+                <div>
+                    <div style="font-size:0.85em; opacity:0.7; margin-bottom:5px;">近30天内活动</div>
+                    ${chartTrend}
+                    <div style="display:flex; justify-content:space-between; font-size:0.7em; opacity:0.4; margin-top:2px;">
+                        <span>${startLabel}</span>
+                        <span style="opacity:0.5">Recent Trend</span>
+                        <span>${endLabel}</span>
+                    </div>
+                </div>
+            </div>
+
+            <div class="stat-card">
+                <h3 style="margin-bottom:5px;">🔑 高频用词</h3>
+                <div style="display:flex; flex-wrap:wrap; gap:6px; align-items:center;">${cloudHtml}</div>
+            </div>
+
+        </div>`;
+    
+    $('#obs-body-content').html(html);
+}
+
+
+function renderObsessionSearch(query, context) {
+    const matches = context.chat.filter(msg => (msg.mes||"").toLowerCase().includes(query.toLowerCase()));
+    let html = `<div style="max-width:800px; margin:0 auto;">`;
+    matches.slice().reverse().forEach((msg, idx) => {
+        const rawText = msg.mes.replace(/<[^>]+>/g, ""); 
+        const regex = new RegExp(`(${query})`, "gi");
+        const highlight = rawText.replace(regex, '<span class="highlight-text">$1</span>');
+        html += `
+        <div class="search-result-item ${msg.is_user?'':'is-ai'}">
+            <div style="display:flex; justify-content:space-between; opacity:0.6; font-size:0.8em; margin-bottom:5px;">
+                <span>${msg.send_date || "Unknown Date"}</span>
+                ${!msg.is_user ? `<span class="singularity-collect-btn" data-text="${encodeURIComponent(rawText)}" title="收藏">🧬 收藏</span>` : ''}
+            </div>
+            <div style="white-space:pre-wrap;">${highlight}</div>
+        </div>`;
+    });
+    html += `</div>`;
+    $('#obs-body-content').html(html);
+    
+    $('#obs-body-content').find('.singularity-collect-btn').on('click', function() {
+        const text = decodeURIComponent($(this).data('text'));
+        storeGeneSequence(context.name2, text, null, "Obsession Collect");
+        $(this).text("✔️ 已归档").css("color", "#b19cd9");
+    });
+}
+
+// ============================================================================
+// 🎼 核心逻辑
+// ============================================================================
 function playTrackByIndex(index) {
     if (index < 0 || index >= globalPlaylist.length) return;
     currentTrackIndex = index;
     const item = globalPlaylist[index];
-    audioPlayer.src = item.data;
-    audioPlayer.play();
-    isPlaying = true;
-    updatePlayerUI();
+    let src = null;
+    if (item.path) src = item.path.startsWith("http") || item.path.startsWith("/") ? item.path : "/" + item.path;
+    else if (item.data) src = item.data;
     
-    $(".hux-item").removeClass("playing");
-    $(`.hux-item[data-id="${item.id}"]`).addClass("playing");
+    if (src) {
+        audioPlayer.src = src;
+        audioPlayer.play().catch(e => console.error(e));
+        isPlaying = true;
+        updatePlayerUI();
+        $(".hux-item").removeClass("playing");
+        $(`.hux-item[data-id="${item.id}"]`).addClass("playing");
+    }
+}
+
+function playNextTrack() {
+    if (globalPlaylist.length === 0) return;
+    currentTrackIndex = isRandomMode ? Math.floor(Math.random() * globalPlaylist.length) : currentTrackIndex + 1;
+    if (currentTrackIndex >= globalPlaylist.length) currentTrackIndex = 0;
+    playTrackByIndex(currentTrackIndex);
 }
 
 function togglePlay() {
     if (globalPlaylist.length === 0) return;
-    if (audioPlayer.paused && audioPlayer.src) {
-        audioPlayer.play();
-        isPlaying = true;
-    } else if (!audioPlayer.paused) {
-        audioPlayer.pause();
-        isPlaying = false;
-    } else {
-        playNextTrack();
-    }
+    if (audioPlayer.paused && audioPlayer.src) { audioPlayer.play(); isPlaying = true; }
+    else if (!audioPlayer.paused) { audioPlayer.pause(); isPlaying = false; }
+    else playNextTrack();
     updatePlayerUI();
 }
 
-
-
-function dataURItoBlob(dataURI) {
-    try {
-        const byteString = atob(dataURI.split(',')[1]);
-        const mimeString = dataURI.split(',')[0].split(':')[1].split(';')[0];
-        const ab = new ArrayBuffer(byteString.length);
-        const ia = new Uint8Array(ab);
-        for (let i = 0; i < byteString.length; i++) {
-            ia[i] = byteString.charCodeAt(i);
-        }
-        return new Blob([ab], {type: mimeString});
-    } catch (e) {
-        console.error("Blob conversion failed", e);
-        return null;
+function updatePlayerUI() {
+    const icon = isPlaying ? '<i class="fa-solid fa-pause"></i>' : '<i class="fa-solid fa-play"></i>';
+    $("#hux-play-btn").html(icon);
+    $('#singularity-modal #hux-play-btn').html(icon); 
+    const item = globalPlaylist[currentTrackIndex];
+    if (item) {
+        $("#hux-status").text(`🎵 ${item.title || "Unknown Track"}`);
+        $('#singularity-modal #hux-status').text(`🎵 ${item.title || "Unknown Track"}`);
     }
 }
 
-async function exportAsZip(charName, list) {
-    if (typeof JSZip === 'undefined') {
-        toastr.error("ZIP组件尚未加载，请刷新页面重试。", "Export Failed");
-        return;
+async function storeGeneSequence(charName, textContent, audioBlob, date) {
+    const settings = loadSettings();
+    const uniqueKey = getUniqueCharKey();
+    if (!settings.biomass[uniqueKey]) settings.biomass[uniqueKey] = [];
+    
+    if (settings.biomass[uniqueKey].some(x => x.text === textContent)) {
+        toastr.warning("记忆已存在", "Singularity");
+        return false;
     }
 
-    const zip = new JSZip();
-    const folder = zip.folder(`${charName}_Memories`);
-    let audioCount = 0;
-    
-    toastr.info("正在打包记忆...", "Please Wait");
-
-    let textLog = `=== ${charName} Memory Log ===\nExported: ${new Date().toLocaleString()}\n\n`;
-
-    list.forEach((item, index) => {
-        const dateStr = item.date.replace(/[\/:]/g, "-").split(' ')[0]; 
-        const rawText = item.text.replace(/<[^>]*>/g, "").trim();
-        let titleSafe = item.title ? item.title.replace(/[\\/:*?"<>|]/g, "_") : "";
-        if (!titleSafe) titleSafe = rawText.slice(0, 15).replace(/[\\/:*?"<>|]/g, "_");
-        
-        const displayTitle = item.title ? `[${item.title}]` : "";
-
-        textLog += `[Track ${index+1}] ${item.date} ${displayTitle}\nContent: ${rawText}\n`;
-
-        if (item.data) {
-            const blob = dataURItoBlob(item.data);
-            if (blob) {
-                let ext = "wav"; 
-                if (blob.type.includes("mp3")) ext = "mp3";
-                else if (blob.type.includes("ogg")) ext = "ogg";
-                
-                const fileName = `${dateStr}_${index}_${titleSafe}.${ext}`;
-                folder.file(fileName, blob);
-                textLog += `File: ${fileName}\n`;
-                audioCount++;
-            }
-        }
-        textLog += `-----------------------------------\n`;
+    settings.biomass[uniqueKey].push({
+        id: Date.now(),
+        date: date || new Date().toLocaleString(),
+        title: "",
+        text: textContent,
+        path: null,
+        data: null
     });
+    
+    saveSettings(settings);
+    refreshInterface();
+    if ($('#singularity-modal').is(':visible')) renderSingularityList();
+    return true;
+}
 
-    folder.file("00_Memory_Log.txt", textLog);
-
-    try {
-        const content = await zip.generateAsync({type:"blob"});
+function exportAsZip(charName, list) {
+    if (typeof JSZip === 'undefined') { toastr.error("ZIP库未加载"); return; }
+    const zip = new JSZip();
+    let log = "";
+    list.forEach((item) => { log += `[${item.date}] ${item.text.replace(/<[^>]+>/g,"")}\n---\n`; });
+    zip.file("memory_log.txt", log);
+    zip.generateAsync({type:"blob"}).then(content => {
         const a = document.createElement("a");
         a.href = URL.createObjectURL(content);
-        a.download = `${charName}_Voice_Pack_${Date.now()}.zip`;
+        a.download = `${charName}_memories.zip`;
         a.click();
-        toastr.success(`成功导出 ${audioCount} 个音频文件！`, "Export Complete");
-    } catch (e) {
-        toastr.error("打包失败，请检查控制台。", "Error");
-        console.error(e);
-    }
+    });
 }
 
-
-function refreshInterface() {
-    const context = getContext();
-    const currentChar = context.name2; 
-    const uniqueKey = getUniqueCharKey(); 
-    const fullList = getCharBiomass(uniqueKey, currentChar);
-    const settings = loadBiomass();
-    globalPlaylist = fullList.filter(item => item.data); 
-
-    let $drawer = $(`#${DRAWER_ID}`);
-
-    const cssStyle = `
-        :root {
-            --hux-accent: var(--smart-theme-quote-color, #90caf9);
-            --hux-bg-card: var(--bg-2);
-            --hux-bg-hover: var(--bg-3);
-            --hux-border: var(--border-color);
-        }
-
-        .hux-container {
-            font-family: var(--font-body);
-            background: var(--block-body);
-            color: var(--text-body);
-            border: 1px solid var(--hux-border);
-            margin-top: 5px;
-            display: flex;
-            flex-direction: column;
-        }
-        
-        .hux-controls {
-            padding: 10px;
-            background: var(--bg-1);
-            border-bottom: 1px solid var(--hux-border);
-            display: flex;
-            align-items: center;
-            gap: 8px;
-        }
-        
-        .hux-btn {
-            cursor: pointer;
-            width: 32px; height: 32px;
-            display: flex; align-items: center; justify-content: center;
-            border-radius: 4px;
-            background: var(--bg-2);
-            border: 1px solid var(--hux-border);
-            color: var(--text-body);
-            transition: all 0.1s;
-            font-size: 1em;
-        }
-        .hux-btn:hover { 
-            background: var(--hux-bg-hover); 
-            color: var(--hux-accent);
-        }
-        .hux-btn.active { 
-            background: var(--hux-accent); 
-            color: var(--block-body); 
-            border-color: var(--hux-accent);
-        }
-        
-        .hux-status {
-            flex-grow: 1; margin: 0 10px;
-            white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
-            opacity: 0.7; font-size: 0.85em;
-        }
-
-        .hux-content-wrapper { display: block; }
-
-        .hux-search-box {
-            padding: 8px; background: var(--bg-1);
-            border-bottom: 1px solid var(--hux-border);
-        }
-        .hux-search-input {
-            width: 100%; padding: 6px 10px;
-            border-radius: 4px; border: 1px solid var(--hux-border);
-            background: var(--input-bg); color: var(--input-text);
-        }
-
-        .hux-list {
-            max-height: 400px; overflow-y: auto; padding: 8px;
-            background: var(--bg-0);
-        }
-
-        .hux-item {
-            background: var(--hux-bg-card);
-            border: 1px solid var(--hux-border);
-            margin-bottom: 6px; border-radius: 4px;
-            transition: transform 0.1s;
-        }
-        .hux-item:hover { border-color: var(--hux-accent); }
-        .hux-item.playing { 
-            border-left: 4px solid var(--hux-accent);
-            background: var(--hux-bg-hover);
-        }
-
-        .hux-header {
-            padding: 8px 10px; cursor: pointer;
-            display: flex; align-items: center; gap: 10px; font-size: 0.9em;
-        }
-        
-        .hux-date { 
-            color: var(--hux-text-sub); font-size: 0.8em; opacity: 0.6;
-            min-width: 80px;
-        }
-        .hux-preview { 
-            flex-grow: 1; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; 
-            text-align: left; font-weight: 500;
-        }
-        .hux-custom-title {
-            color: var(--hux-accent);
-            font-weight: bold;
-            margin-right: 5px;
-        }
-
-        .hux-icon { font-size: 0.9em; opacity: 0.6; margin-left: auto; }
-
-        .hux-body {
-            display: none; padding: 10px;
-            border-top: 1px dashed var(--hux-border);
-            font-size: 0.9em; line-height: 1.5;
-            background: rgba(0,0,0,0.05);
-        }
-        
-        .hux-actions {
-            display: flex; justify-content: flex-end; align-items: center;
-            margin-top: 8px; gap: 10px;
-        }
-        .hux-del { color: #ff6b6b; cursor: pointer; font-size: 0.8em; }
-        .hux-edit { color: var(--text-body); opacity:0.7; cursor: pointer; font-size: 0.8em; }
-        .hux-play-one { color: var(--hux-accent); cursor: pointer; font-size: 0.85em; font-weight: bold; }
-    `;
-
-    if ($("#hux-style").length === 0) $("head").append(`<style id="hux-style">${cssStyle}</style>`);
-    else $("#hux-style").html(cssStyle);
-
-    if ($drawer.length === 0) {
-        $drawer = $(`<div id="${DRAWER_ID}" class="inline-drawer"></div>`);
-        $("#extensions_settings").append($drawer);
-    }
-
-    const renderSkeleton = () => {
-        let listHtml = '';
-        if (fullList.length === 0) {
-            listHtml = `<div style="padding:20px; text-align:center; opacity:0.5; font-size:0.9em;">Waiting for new memories...</div>`;
-        } else {
-            [...fullList].reverse().forEach(item => {
-                const plainText = item.text.replace(/<[^>]*>/g, "").slice(0, 30);
-                const hasAudio = !!item.data;
-                const itemTitle = item.title || "";
-                const searchText = (itemTitle + " " + item.text + " " + item.date).replace(/<[^>]*>/g, "").toLowerCase();
-                const shortDate = item.date.split(' ')[0] || "Unknown";
-
-                listHtml += `
-                <div class="hux-item ${hasAudio ? 'has-audio' : ''}" data-id="${item.id}" data-search="${searchText.replace(/"/g, '&quot;')}">
-                    <div class="hux-header">
-                        <span class="hux-date">${shortDate}</span>
-                        <span class="hux-preview">
-                            ${itemTitle ? `<span class="hux-custom-title">【${itemTitle}】</span>` : ''}
-                            ${plainText}
-                        </span>
-                        <span class="hux-icon">${hasAudio ? '<i class="fa-solid fa-compact-disc"></i>' : '<i class="fa-regular fa-file-lines"></i>'}</span>
-                    </div>
-                    <div class="hux-body">
-                        <div class="hux-text">${item.text}</div>
-                        <div class="hux-actions">
-                            ${hasAudio ? `<span class="hux-play-one" data-id="${item.id}"><i class="fa-solid fa-play"></i> 播放</span>` : ''}
-                            <span class="hux-edit" data-id="${item.id}"><i class="fa-solid fa-pen-to-square"></i> 标题</span>
-                            <span class="hux-del" data-id="${item.id}"><i class="fa-solid fa-trash"></i> 删除</span>
-                        </div>
-                    </div>
-                </div>`;
-            });
-        }
-
-        const html = `
-            <div class="hux-container">
-                <div class="inline-drawer-header inline-drawer-toggle">
-                    <b>👁️‍🗨️ ${currentChar} :: 奇点收藏</b>
-                    <div class="inline-drawer-icon fa-solid fa-circle-chevron-down"></div>
-                </div>
-                
-                <div class="hux-content-wrapper">
-                    <div class="hux-controls">
-                        <div class="hux-btn" id="hux-play-btn" title="播放/暂停">
-                            <i class="fa-solid fa-play"></i>
-                        </div>
-                        <div class="hux-btn" id="hux-next-btn" title="下一条">
-                            <i class="fa-solid fa-forward-step"></i>
-                        </div>
-                        <div class="hux-btn ${isRandomMode ? 'active' : ''}" id="hux-mode-btn" title="模式切换">
-                           <i class="fa-solid ${isRandomMode ? 'fa-shuffle' : 'fa-repeat'}"></i>
-                        </div>
-                        
-                        <div class="hux-status" id="hux-player-status">Waiting...</div>
-                        
-                        <div style="flex-grow:1"></div> 
-                        
-                        <div class="hux-btn" id="hux-export-txt" title="导出文本 (.txt)">
-                            <i class="fa-solid fa-file-lines"></i>
-                        </div>
-                        <div class="hux-btn" id="hux-export-zip" title="导出音频 (.zip)">
-                            <i class="fa-solid fa-file-zipper"></i>
-                        </div>
-                    </div>
-
-                    <div class="hux-search-box">
-                        <input type="text" class="hux-search-input" placeholder="Search title, content or date..." id="hux-search-bar">
-                    </div>
-                    <div class="hux-list">
-                        ${listHtml}
-                    </div>
-                </div>
-            </div>
-        `;
-        
-        $drawer.html(html);
-
-        $drawer.find(".inline-drawer-toggle").on("click", function() {
-            const $wrapper = $drawer.find(".hux-content-wrapper");
-            const $icon = $(this).find(".inline-drawer-icon");
-            $wrapper.slideToggle(200, function() {
-                if ($wrapper.is(":visible")) $icon.removeClass("fa-circle-chevron-right").addClass("fa-circle-chevron-down");
-                else $icon.removeClass("fa-circle-chevron-down").addClass("fa-circle-chevron-right");
-            });
-        });
-
-        $drawer.find("#hux-search-bar").on("input", function() {
-            const val = $(this).val().toLowerCase();
-            $drawer.find(".hux-item").each(function() {
-                const $item = $(this);
-                const searchContent = $item.data("search");
-                if (searchContent.includes(val)) $item.show();
-                else $item.hide();
-            });
-        });
-
-        $drawer.find(".hux-header").on("click", function() {
-            $(this).next(".hux-body").slideToggle(150);
-        });
-
-        $drawer.find(".hux-del").on("click", function(e) {
-            e.stopPropagation();
-            if (confirm("删除这条记忆？")) {
-                const id = $(this).data("id");
-                if (settings.biomass[uniqueKey]) {
-                    settings.biomass[uniqueKey] = settings.biomass[uniqueKey].filter(x => x.id !== id);
-                } else if (settings.biomass[currentChar]) {
-                    settings.biomass[currentChar] = settings.biomass[currentChar].filter(x => x.id !== id);
-                }
-                saveBiomass(settings);
-                refreshInterface();
-            }
-        });
-        
-        $drawer.find(".hux-edit").on("click", function(e) {
-            e.stopPropagation();
-            const id = $(this).data("id");
-            let targetList = settings.biomass[uniqueKey] || settings.biomass[currentChar];
-            if (!targetList) return;
-            
-            const item = targetList.find(x => x.id === id);
-            if (item) {
-                const newTitle = prompt("为这段记忆添加/修改标题：", item.title || "");
-                if (newTitle !== null) {
-                    item.title = newTitle.trim();
-                    saveBiomass(settings);
-                    refreshInterface();
-                }
-            }
-        });
-
-        $drawer.find(".hux-play-one").on("click", function(e) {
-            e.stopPropagation();
-            const id = $(this).data("id");
-            const index = globalPlaylist.findIndex(x => x.id === id);
-            if (index !== -1) playTrackByIndex(index);
-        });
-
-        $drawer.find("#hux-play-btn").on("click", togglePlay);
-        $drawer.find("#hux-next-btn").on("click", () => playNextTrack());
-        
-        $drawer.find("#hux-mode-btn").on("click", function() {
-            isRandomMode = !isRandomMode;
-            $(this).toggleClass("active");
-            const $icon = $(this).find("i");
-            if (isRandomMode) {
-                $icon.removeClass("fa-repeat").addClass("fa-shuffle");
-                $(this).attr("title", "当前：随机播放");
-            } else {
-                $icon.removeClass("fa-shuffle").addClass("fa-repeat");
-                $(this).attr("title", "当前：顺序播放");
-            }
-        });
-
-        $drawer.find("#hux-export-txt").on("click", () => {
-             let content = `=== ${currentChar} :: Memory Log ===\n\n`;
-             fullList.forEach(item => {
-                 const titleStr = item.title ? `[${item.title}] ` : "";
-                 content += `[${item.date}] ${titleStr}\n${item.text.replace(/<[^>]*>/g, "")}\n-------------------\n`;
-             });
-             const blob = new Blob([content], { type: "text/plain" });
-             const a = document.createElement("a");
-             a.href = URL.createObjectURL(blob);
-             a.download = `${currentChar}_Log_${Date.now()}.txt`;
-             a.click();
-        });
-        
-        $drawer.find("#hux-export-zip").on("click", () => exportAsZip(currentChar, fullList));
-        if (isPlaying) {
-             $drawer.find("#hux-play-btn").html('<i class="fa-solid fa-pause"></i>');
-             updatePlayerUI(); 
-        }
-    };
-
-    renderSkeleton();
-}
-
-function updatePlayerUI() {
-    const $btnPlay = $("#hux-play-btn");
-    const $status = $("#hux-player-status");
-    $btnPlay.html(isPlaying ? '<i class="fa-solid fa-pause"></i>' : '<i class="fa-solid fa-play"></i>');
+// ============================================================================
+// 👁️‍🗨️ 按钮注入逻辑 
+// ============================================================================
+function scanForOrganics() {
+    const $messages = $("#chat .mes");
     
-    if (currentTrackIndex >= 0 && globalPlaylist[currentTrackIndex]) {
-        const item = globalPlaylist[currentTrackIndex];
-        let text = item.title || item.text.replace(/<[^>]*>/g, "");
-        text = text.slice(0, 15);
-        $status.text(`🎵 ${text}...`);
-    } else {
-        $status.text("💤 Ready...");
-    }
+    if ($messages.length === 0) return;
+
+    $messages.each(function() {
+        const $mes = $(this);
+        
+        if ($mes.find(".hux-assimilate-btn").length > 0) return;
+        
+        const $btn = $(`<span class="hux-assimilate-btn" title="采集至 Singularity">👁️‍🗨️</span>`);
+        const $timestamp = $mes.find(".mes_timestamp, .timestamp, .swipe_date");
+        
+        if ($timestamp.length > 0) {
+            $timestamp.append($btn);
+        } else {
+            const $mesBlock = $mes.find(".mes_block");
+            if ($mesBlock.length > 0) {
+                $mesBlock.find(".ch_name, .name_text").first().append($btn);
+            }
+        }
+
+        $btn.on("click", async function(e) {
+            e.stopPropagation();
+            const text = $mes.find(".mes_text").html();
+            const success = await storeGeneSequence(getContext().name2, text, null, "Chat Collect");
+            if(success) {
+                $(this).text("🧬").css({opacity: 1, color: "#b19cd9", cursor: "default"});
+                toastr.success("记忆碎片已捕获", "Singularity");
+            }
+        });
+    });
 }
 
-jQuery(async () => {
-    const engage = () => {
-        setTimeout(scanForOrganics, 500);
-        setTimeout(scanForOrganics, 1500); 
+// ============================================================================
+// 🚀 启动与监听
+// ============================================================================
+jQuery(() => {
+    console.log("Singularity + Obsession Merge [Optimized] Loaded.");
+    refreshInterface();
+    setTimeout(scanForOrganics, 1000);
+    setTimeout(scanForOrganics, 3000);
+
+    const chatObserver = new MutationObserver((mutations) => {
+        let shouldScan = false;
+        mutations.forEach(mutation => {
+            if (mutation.addedNodes.length > 0) {
+                shouldScan = true;
+            }
+        });
+        if (shouldScan) scanForOrganics();
+    });
+
+    const chatContainer = document.querySelector('#chat');
+    if (chatContainer) {
+        chatObserver.observe(chatContainer, { childList: true, subtree: true });
+    } else {
+        setTimeout(() => {
+            const retryChat = document.querySelector('#chat');
+            if(retryChat) chatObserver.observe(retryChat, { childList: true, subtree: true });
+        }, 2000);
+    }
+
+    eventSource.on(event_types.CHAT_CHANGED, () => {
         refreshInterface();
-    };
-    eventSource.on(event_types.MESSAGE_RECEIVED, engage);
-    eventSource.on(event_types.CHAT_CHANGED, engage);
-    eventSource.on(event_types.CHARACTER_LOADED, engage);
-    if (event_types.MESSAGE_RENDERED) eventSource.on(event_types.MESSAGE_RENDERED, () => setTimeout(scanForOrganics, 100));
-    engage();
-    setInterval(scanForOrganics, 2000); 
+        setTimeout(scanForOrganics, 500);
+    });
 });
+// ============================================================================
+// 🌍 全局挂载 
+// ============================================================================
+window.openSingularityGlobal = function(e) {
+    if(e) { e.preventDefault(); e.stopPropagation(); }
+    console.log("Global Singularity Triggered"); 
+    showSingularityModal(); 
+};
+
+window.openObsessionGlobal = function(e) {
+    if(e) { e.preventDefault(); e.stopPropagation(); }
+    console.log("Global Obsession Triggered"); 
+    showObsessionModal();
+};
