@@ -1,7 +1,7 @@
 {
     "display_name": "TheSingularity",
     "name": "TheSingularity",
-    "version": "3.0",
+    "version": "4.0",
     "author": "robot",
     "description": "Hux-A7-13 协议：永久同化并储存信息样本",
     "loading_order": 100,
@@ -10,5 +10,4 @@
     "requires": [],
     "optional": []
 }
-
 
