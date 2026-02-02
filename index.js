@@ -23,6 +23,33 @@ if (typeof window.JSZip === 'undefined') {
 }
 
 // ============================================================================
+// 跨域 Blob 抓取器
+// ============================================================================
+async function fetchBlobFromParent(url) {
+    try {
+        const fetcher = (window.top && window.top.fetch) ? window.top.fetch : window.fetch;
+        const response = await fetcher(url);
+
+        if (!response.ok) throw new Error(`Status ${response.status}`);
+        return await response.blob();
+    } catch (e) {
+        console.error("Blob capture failed:", e);
+        return null;
+    }
+}
+
+// 转义函数
+function escapeHtml(text) {
+    if (!text) return text;
+    return text
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;")
+        .replace(/"/g, "&quot;")
+        .replace(/'/g, "&#039;");
+}
+
+// ============================================================================
 // 🎨 样式注入
 // ============================================================================
 const cssStyle = `
@@ -131,11 +158,9 @@ const cssStyle = `
     .highlight-text { color: #ffeb3b; font-weight: bold; background: rgba(255, 235, 59, 0.1); }
     .singularity-collect-btn { cursor: pointer; margin-left: 10px; opacity: 0.5; font-size: 1.2em; }
 
-    /* 🔥 移动端补丁 */
     @media (max-width: 768px) {
-        background: var(--bg-0, transparent) !important;      
         .obsession-modal {
-background: var(--bg-0, transparent) !important; 
+        background: var(--bg-0, transparent) !important; 
             bottom: 0 !important; right: 0 !important;
         }
         
@@ -183,7 +208,7 @@ function getUniqueCharKey() {
     return context.name2;
 }
 // ============================================================================
-// 🚑 数据迁移与上传 (核心修复)
+// 🚑 数据迁移与上传
 // ============================================================================
 
 // 1. 通用上传函数 (使用 jQuery ajax 自动处理 CSRF token)
@@ -200,11 +225,17 @@ async function uploadToSillyTavern(blob, filename) {
             type: 'POST',
             contentType: 'application/json',
             data: JSON.stringify({ name: filename, data: base64Data }),
-            success: function(result) {
+
+            success: function (result) {
                 console.log("[Singularity] Upload Success:", result);
-                resolve(result.path || `user/files/${filename}`);
+
+                let rawPath = result.path || `user/files/${filename}`;
+                let webPath = rawPath.replace(/\\/g, "/");
+
+                resolve(webPath);
             },
-            error: function(xhr, status, err) {
+
+            error: function (xhr, status, err) {
                 console.error("[Singularity] Upload Failed:", xhr.responseText);
                 reject(new Error(`Upload failed: ${xhr.status} ${err}`));
             }
@@ -216,58 +247,58 @@ async function uploadToSillyTavern(blob, filename) {
 async function migrateLegacyData() {
     if (!confirm("⚠️ 准备好迁移数据了吗？\n\n这会将所有旧的音频数据上传为独立文件。\n过程可能需要几秒钟，请勿关闭页面。")) return;
 
-    // 使用当前的加载函数
-    const settings = loadSettings(); 
+    const settings = loadSettings();
     let migratedCount = 0;
-    
+
     toastr.info("正在迁移数据...", "Singularity");
 
-    // 遍历所有角色
     for (const charKey in settings.biomass) {
         const list = settings.biomass[charKey];
         if (!Array.isArray(list)) continue;
 
         for (let i = 0; i < list.length; i++) {
             const item = list[i];
+
             if (item.data && !item.path) {
-                if (item.data.startsWith("blob:")) {
-                    delete item.data; 
-                    continue; 
-                }
-                
-                try {
-                    // 尝试获取音频流
-                    const fetchRes = await fetch(item.data);
-                    const blob = await fetchRes.blob();
-                    
-                    let ext = "wav";
-                    if (blob.type.includes("mp3")) ext = "mp3";
-                    
-                    const safeDate = Date.now() + i;
-                    const filename = `Singularity_Legacy_${safeDate}.${ext}`;
-                    const newPath = await uploadToSillyTavern(blob, filename);
-                    
-                    item.path = newPath;
-                    delete item.data; 
-                    
-                    migratedCount++;
-                } catch (e) {
-                    console.error("Migration skipped for item:", item, e);
+                if (typeof item.data === 'string' && item.data.startsWith("blob:")) {
+                    try {
+                        const blob = await fetchBlobFromParent(item.data);
+
+                        if (!blob) {
+                            console.warn("Blob expired, skipping:", item.data);
+                            continue;
+                        }
+
+                        let ext = "wav";
+                        if (blob.type.includes("mp3")) ext = "mp3";
+
+                        const safeDate = Date.now() + i;
+                        const filename = `Singularity_Legacy_${safeDate}.${ext}`;
+
+                        const newPath = await uploadToSillyTavern(blob, filename);
+
+                        if (newPath) {
+                            item.path = newPath;
+                            delete item.data;
+                            migratedCount++;
+                        }
+                    } catch (e) {
+                        console.error("Migration skipped for item:", item, e);
+                    }
                 }
             }
         }
     }
 
     if (migratedCount > 0) {
-        saveSettings(settings); 
+        saveSettings(settings);
         if ($('#singularity-modal').length > 0) {
             const searchVal = $('#singularity-search').val();
             renderSingularityList(searchVal);
         }
-        
         toastr.success(`成功迁移 ${migratedCount} 条音频！`, "完成");
     } else {
-        toastr.info("没有发现需要迁移的数据。", "Singularity");
+        toastr.info("没有发现需要迁移的数据，或者旧数据已失效（刷新页面会导致 Blob 链接失效）。", "Singularity");
     }
 }
 
@@ -276,7 +307,7 @@ async function migrateLegacyData() {
 // ============================================================================
 function refreshInterface() {
     let $drawer = $(`#${DRAWER_ID}`);
-    
+
     if ($drawer.length === 0) {
         $drawer = $(`<div id="${DRAWER_ID}" class="inline-drawer"></div>`);
         $("#extensions_settings").append($drawer);
@@ -317,18 +348,18 @@ function refreshInterface() {
         `;
         $drawer.html(html);
 
-        $drawer.find(".inline-drawer-toggle").off('click touchstart').on("click touchstart", function(e) {
+        $drawer.find(".inline-drawer-toggle").off('click touchstart').on("click touchstart", function (e) {
             if (e.type === 'touchstart') $(this).data('ts', Date.now());
             if (e.type === 'click' && $(this).data('ts') && Date.now() - $(this).data('ts') < 500) return;
 
-            e.preventDefault(); 
+            e.preventDefault();
             const $wrapper = $(`#${CONTENT_ID}`);
             const $icon = $(this).find(".inline-drawer-icon");
 
             if ($wrapper.is(":visible")) {
                 $wrapper.slideUp(200, () => $icon.removeClass("fa-circle-chevron-down").addClass("fa-circle-chevron-right"));
             } else {
-                $wrapper.css("display", "flex").hide().slideDown(200, function(){
+                $wrapper.css("display", "flex").hide().slideDown(200, function () {
                     $(this).css("display", "flex");
                     $icon.removeClass("fa-circle-chevron-right").addClass("fa-circle-chevron-down");
                 });
@@ -376,24 +407,24 @@ function showSingularityModal() {
     </div>`;
 
     $('body').append(modalHtml);
-    
+
     $('#singularity-modal').css({ 'background-color': '#121212', 'background': '#121212' });
     renderSingularityList();
 
     $('#close-singularity').on('click', () => $('#singularity-modal').remove());
-    
+
     const $modal = $('#singularity-modal');
     $modal.find("#hux-play-btn").on("click", togglePlay);
     $modal.find("#hux-next-btn").on("click", playNextTrack);
     $modal.find("#hux-export").on("click", () => exportAsZip(uniqueKey, loadSettings().biomass[uniqueKey] || []));
-    
+
     $modal.find("#hux-migrate-btn").on("click", migrateLegacyData);
-    
-    $modal.find('#singularity-search').on('input', function() {
+
+    $modal.find('#singularity-search').on('input', function () {
         renderSingularityList($(this).val());
     });
-    
-    if(isPlaying) updatePlayerUI();
+
+    if (isPlaying) updatePlayerUI();
 }
 
 
@@ -404,11 +435,11 @@ function renderSingularityList(filterText = "") {
     const settings = loadSettings();
     const uniqueKey = getUniqueCharKey();
     const fallbackName = getContext().name2;
-    
+
     let list = [];
     if (settings.biomass && settings.biomass[uniqueKey]) list = settings.biomass[uniqueKey];
     else if (fallbackName && settings.biomass && settings.biomass[fallbackName]) list = settings.biomass[fallbackName];
-    
+
     let fullList = list.filter(item => item && typeof item === 'object');
 
     if (filterText) {
@@ -423,6 +454,11 @@ function renderSingularityList(filterText = "") {
     globalPlaylist = fullList.filter(item => (item.data && !item.data.startsWith('blob:')) || item.path);
 
     let listHtml = '';
+    if (filterText) {
+        listHtml += `<div style="text-align:center; padding:5px; font-size:0.85em; opacity:0.6; margin-bottom:10px; color:var(--hux-accent);">
+            检索序列完成：共定位到 <span style="font-weight:bold; color:white;">${fullList.length}</span> 条记忆碎片
+        </div>`;
+    }
     if (fullList.length === 0) {
         listHtml = `<div style="padding:50px; text-align:center; opacity:0.5; font-size:1.2em;">
             <i class="fa-solid fa-filter" style="font-size:3em; margin-bottom:20px;"></i><br>
@@ -430,9 +466,9 @@ function renderSingularityList(filterText = "") {
         </div>`;
     } else {
         [...fullList].reverse().forEach(item => {
-            const hasAudio = !!(item.data || item.path); 
+            const hasAudio = !!(item.data || item.path);
             const plainText = item.text.replace(/<[^>]*>/g, "").slice(0, 60);
-            
+
             let displayTitle = item.title ? `【${item.title}】` : '';
             let displayText = plainText;
 
@@ -446,7 +482,7 @@ function renderSingularityList(filterText = "") {
                     <span>${hasAudio ? '<i class="fa-solid fa-music"></i>' : '<i class="fa-solid fa-align-left"></i>'}</span>
                 </div>
                 <div class="hux-body">
-                    <div style="white-space: pre-wrap; margin-bottom:10px;">${item.text}</div>
+                    <div style="white-space: pre-wrap; margin-bottom:10px;">${escapeHtml(item.text)}</div>
                     <div class="hux-actions">
                         ${hasAudio ? `<div class="hux-btn play-one" data-id="${item.id}" title="播放"><i class="fa-solid fa-play"></i></div>` : ''}
                         <div class="hux-btn edit-item" data-id="${item.id}" title="编辑标题"><i class="fa-solid fa-pen"></i></div>
@@ -459,29 +495,29 @@ function renderSingularityList(filterText = "") {
 
     $container.html(listHtml);
 
-    $container.find(".hux-header").on("click", function() { $(this).next(".hux-body").slideToggle(150); });
-    $container.find(".play-one").on("click", function(e) {
+    $container.find(".hux-header").on("click", function () { $(this).next(".hux-body").slideToggle(150); });
+    $container.find(".play-one").on("click", function (e) {
         e.stopPropagation();
         const index = globalPlaylist.findIndex(x => x.id === $(this).data("id"));
         if (index !== -1) playTrackByIndex(index);
     });
-    $container.find(".del-item").on("click", function(e){
+    $container.find(".del-item").on("click", function (e) {
         e.stopPropagation();
-        if(confirm("移除此记忆？")) {
+        if (confirm("移除此记忆？")) {
             settings.biomass[uniqueKey] = settings.biomass[uniqueKey].filter(x => x.id !== $(this).data("id"));
             saveSettings(settings);
-            renderSingularityList($("#singularity-search").val()); 
+            renderSingularityList($("#singularity-search").val());
         }
     });
-    $container.find(".edit-item").on("click", function(e){
+    $container.find(".edit-item").on("click", function (e) {
         e.stopPropagation();
         const item = settings.biomass[uniqueKey].find(x => x.id === $(this).data("id"));
-        if(item) {
+        if (item) {
             const t = prompt("标题:", item.title);
-            if(t !== null) { 
-                item.title = t; 
-                saveSettings(settings); 
-                renderSingularityList($("#singularity-search").val()); 
+            if (t !== null) {
+                item.title = t;
+                saveSettings(settings);
+                renderSingularityList($("#singularity-search").val());
             }
         }
     });
@@ -494,10 +530,10 @@ function renderSingularityList(filterText = "") {
 // 🕷️ Obsession 全屏模态框
 // ============================================================================
 function showObsessionModal() {
-    $('#obsession-modal').remove(); 
+    $('#obsession-modal').remove();
     const context = getContext();
     const charName = context.name2 || "Target";
-    
+
     const modalHtml = `
     <div class="obsession-modal" id="obsession-modal">
         <div class="obsession-header">
@@ -511,47 +547,47 @@ function showObsessionModal() {
     </div>`;
 
     $('body').append(modalHtml);
-    
+
     $('#obsession-modal').css({
         'background-color': '#121212',
         'background': '#121212'
     });
-    
+
     renderObsessionStats(context);
     $('#close-obsession').on('click', () => $('#obsession-modal').remove());
-    
+
     let timeout;
-    $('#obs-search').on('input', function() {
+    $('#obs-search').on('input', function () {
         const val = $(this).val();
         clearTimeout(timeout);
         timeout = setTimeout(() => {
-            if(!val.trim()) renderObsessionStats(context);
+            if (!val.trim()) renderObsessionStats(context);
             else renderObsessionSearch(val, context);
         }, 300);
     });
 }
 
 // ============================================================================
-// 📊 统计生成核心算法 
+// 📊 统计生成核心算法
 // ============================================================================
 function calculateStats(chatData) {
     let stats = {
         totalMsgs: chatData.chat.length,
-        userWords: 0, aiWords: 0, 
+        userWords: 0, aiWords: 0,
         wordMap: {},
-        hours: new Array(24).fill(0), 
-        dates: {}, 
+        hours: new Array(24).fill(0),
+        dates: {},
         startDate: "Unknown"
     };
 
-const stopWords = new Set([
+    const stopWords = new Set([
         "the", "and", "a", "to", "of", "it", "in", "is", "you", "i", "me", "my", "that", "he", "she", "his", "her", "him", "with", "for", "on", "as", "at", "but", "be", "not", "what", "so", "have", "do", "this", "from", "by", "or",
-        "just", "about", "very", "would", "could", "should", "really", "something", "anything", "nothing", 
+        "just", "about", "very", "would", "could", "should", "really", "something", "anything", "nothing",
         "back", "down", "over", "there", "here", "then", "now", "when", "where", "why", "how", "out", "up", "all", "some", "any", "no", "yes", "oh", "well", "like", "one", "can", "want", "know", "think", "get", "go", "see",
-        "are", "your", "will", "was", "has", "did", "does", "don", 
+        "are", "your", "will", "was", "has", "did", "does", "don",
         "look", "make", "tell", "need", "let",
         "because", "they", "them", "who", "only", "more", "too", "right", "time", "were",
-        "mode", "sandbox", 
+        "mode", "sandbox",
         "我", "你", "他", "她", "它", "的", "了", "在", "是", "就", "都", "而", "及", "与", "着", "个", "这", "那", "有", "也", "很", "啊", "吧", "呢", "吗", "么", "去", "来", "说", "着",
         "user", "char", "name"
     ]);
@@ -561,29 +597,32 @@ const stopWords = new Set([
 
     chatData.chat.forEach(msg => {
         let rawText = (msg.mes || "");
-        
+
         try {
             let dStr = msg.send_date || msg.date;
-            
+
             if (dStr && typeof dStr === "string") {
-                dStr = dStr.replace(/[年月]/g, '/').replace(/[日]/g, '');
-                dStr = dStr.replace(/(\d)(am|pm)/gi, '$1 $2');
-                let dateObj = new Date(dStr);
+                let cleanDStr = dStr.replace(/[年月]/g, '/').replace(/[日]/g, '');
+                cleanDStr = cleanDStr.replace(/(\d)(am|pm)/gi, '$1 $2');
+                let dateObj = new Date(cleanDStr);
 
                 if (!isNaN(dateObj.getTime())) {
                     if (stats.startDate === "Unknown" || dateObj < new Date(stats.startDate)) {
                         stats.startDate = dateObj.toLocaleDateString();
                     }
+
                     let h = dateObj.getHours();
                     if (h >= 0 && h < 24) stats.hours[h]++;
 
+                    let y = dateObj.getFullYear();
                     let m = dateObj.getMonth() + 1;
                     let d = dateObj.getDate();
-                    let dateKey = `${m.toString().padStart(2, '0')}-${d.toString().padStart(2, '0')}`;
+                    let dateKey = `${y}-${m.toString().padStart(2, '0')}-${d.toString().padStart(2, '0')}`;
                     stats.dates[dateKey] = (stats.dates[dateKey] || 0) + 1;
                 }
             }
-        } catch (e) { 
+        } catch (e) {
+            console.error("Date parse error:", e);
         }
 
         let cleanBaseText = rawText.replace(/<[^>]+>/g, "").replace(/\{\{[^}]+\}\}/g, "");
@@ -594,11 +633,12 @@ const stopWords = new Set([
         let match;
         let dialogueContent = "";
         while ((match = quoteRegex.exec(cleanBaseText)) !== null) { dialogueContent += match[1] + " "; }
-        if (!dialogueContent.trim()) return;
-        
-        dialogueContent.toLowerCase().match(/[\u4e00-\u9fa5]{2,}|[a-zA-Z]{3,}/g)?.forEach(t => {
-            if (!stopWords.has(t)) stats.wordMap[t] = (stats.wordMap[t] || 0) + 1;
-        });
+
+        if (dialogueContent.trim()) {
+            dialogueContent.toLowerCase().match(/[\u4e00-\u9fa5]{2,}|[a-zA-Z]{3,}/g)?.forEach(t => {
+                if (!stopWords.has(t)) stats.wordMap[t] = (stats.wordMap[t] || 0) + 1;
+            });
+        }
     });
 
     const minFrequency = stats.totalMsgs > 300 ? 3 : 2;
@@ -615,11 +655,11 @@ const stopWords = new Set([
 // ============================================================================
 function generateSVGChart(data, type = "bar", color = "#ff6b6b", height = 60) {
     if (!data || data.length === 0) return "";
-    
+
     const maxVal = Math.max(...data) || 1;
     const width = 100; // viewbox units
     const step = width / (data.length - 1 || 1);
-    
+
     let svgContent = "";
 
     if (type === "bar") {
@@ -628,23 +668,23 @@ function generateSVGChart(data, type = "bar", color = "#ff6b6b", height = 60) {
             const h = (val / maxVal) * height;
             const x = (width / data.length) * i;
             const y = height - h;
-            const opacity = 0.3 + (val / maxVal) * 0.7; 
+            const opacity = 0.3 + (val / maxVal) * 0.7;
             svgContent += `<rect x="${x}" y="${y}" width="${barWidth}" height="${h}" fill="${color}" rx="1" style="opacity:${opacity}"/>`;
         });
     } else if (type === "line") {
         let points = "";
-        let areaPoints = `0,${height} `; 
-        
+        let areaPoints = `0,${height} `;
+
         data.forEach((val, i) => {
-            const h = (val / maxVal) * height; 
+            const h = (val / maxVal) * height;
             const x = i * step;
             const y = height - h;
             points += `${x},${y} `;
             areaPoints += `${x},${y} `;
         });
-        
-        areaPoints += `${width},${height}`; 
-        
+
+        areaPoints += `${width},${height}`;
+
         svgContent += `<polygon points="${areaPoints}" fill="${color}" style="opacity:0.15"/>`;
         svgContent += `<polyline points="${points}" fill="none" stroke="${color}" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"/>`;
         const maxIdx = data.indexOf(maxVal);
@@ -658,19 +698,19 @@ function generateSVGChart(data, type = "bar", color = "#ff6b6b", height = 60) {
 
 
 // ============================================================================
-// 🕷️ 渲染 Obsession 统计面板 
+// 🕷️ 渲染 Obsession 统计面板
 // ============================================================================
-
 function renderObsessionStats(context) {
     const stats = calculateStats({
         chat: context.chat || [],
-        charName: context.name2, 
-        userName: context.name1 
+        charName: context.name2,
+        userName: context.name1
     });
 
-    let cloudHtml = stats.topWords.map(([w,c]) => 
+    let cloudHtml = stats.topWords.map(([w, c]) =>
         `<span class="word-tag" title="出现 ${c} 次">${w} <small style="opacity:1; color:#ffffff; font-weight:bold; margin-left:2px;">${c}</small></span>`
     ).join("");
+
     if (!cloudHtml) cloudHtml = `<div style="opacity:0.5; padding:20px; text-align:center;">暂无足够数据生成词云</div>`;
 
     const totalWords = (stats.userWords + stats.aiWords) || 1;
@@ -678,17 +718,17 @@ function renderObsessionStats(context) {
     const userPercent = 100 - aiPercent;
     const userDisplay = context.name1 || "User";
     const charDisplay = context.name2 || "Char";
-    const hoursData = stats.hours; 
-    
+    const hoursData = stats.hours;
+
     const sortedDates = Object.keys(stats.dates).sort();
-    const recentDates = sortedDates.slice(-30); 
+    const recentDates = sortedDates.slice(-30);
     const trendData = recentDates.map(d => stats.dates[d]);
-    
+
     let startLabel = "- / -";
     let endLabel = "- / -";
     if (recentDates.length > 0) {
-        startLabel = recentDates[0]; 
-        endLabel = recentDates[recentDates.length - 1]; 
+        startLabel = recentDates[0].split('-').slice(1).join('-');
+        endLabel = recentDates[recentDates.length - 1].split('-').slice(1).join('-');
     }
 
     const chart24h = generateSVGChart(hoursData, "bar", "#90caf9", 50);
@@ -696,7 +736,6 @@ function renderObsessionStats(context) {
 
     const html = `
         <div style="max-width:800px; margin:0 auto; display:flex; flex-direction:column; gap:15px;">
-            
             <div class="stat-card">
                 <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px;">
                     <h3 style="margin:0;">📊 双方输出统计</h3>
@@ -714,20 +753,16 @@ function renderObsessionStats(context) {
 
             <div class="stat-card" style="position:relative;">
                 <h3 style="margin:0 0 15px 0;">⏳ 时间突触</h3>
-                
                 <div style="margin-bottom:20px;">
                     <div style="font-size:0.85em; opacity:0.7; margin-bottom:5px; display:flex; justify-content:space-between;">
-                        <span>高峰期</span>
+                        <span>24小时活跃分布</span>
                         <span>峰值: <b style="color:#90caf9">${hoursData.indexOf(Math.max(...hoursData))}点</b></span>
                     </div>
                     ${chart24h}
-                    <div style="display:flex; justify-content:space-between; font-size:0.7em; opacity:0.4; margin-top:2px;">
-                        <span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>23:59</span>
-                    </div>
                 </div>
 
                 <div>
-                    <div style="font-size:0.85em; opacity:0.7; margin-bottom:5px;">近30天内活动</div>
+                    <div style="font-size:0.85em; opacity:0.7; margin-bottom:5px;">近30天聊天强度 (截止至 ${endLabel})</div>
                     ${chartTrend}
                     <div style="display:flex; justify-content:space-between; font-size:0.7em; opacity:0.4; margin-top:2px;">
                         <span>${startLabel}</span>
@@ -741,22 +776,25 @@ function renderObsessionStats(context) {
                 <h3 style="margin-bottom:5px;">🔑 高频用词</h3>
                 <div style="display:flex; flex-wrap:wrap; gap:6px; align-items:center;">${cloudHtml}</div>
             </div>
-
         </div>`;
-    
+
     $('#obs-body-content').html(html);
 }
 
-
 function renderObsessionSearch(query, context) {
-    const matches = context.chat.filter(msg => (msg.mes||"").toLowerCase().includes(query.toLowerCase()));
-    let html = `<div style="max-width:800px; margin:0 auto;">`;
+    const matches = context.chat.filter(msg => (msg.mes || "").toLowerCase().includes(query.toLowerCase()));
+    let html = `<div style="max-width:800px; margin:0 auto;">
+        <div style="text-align:center; padding-bottom:15px; margin-bottom:15px; border-bottom:1px dashed #333; font-size:0.9em; opacity:0.7;">
+            <span style="color:#ff6b6b">⚡</span> 
+            关键词 "<span style="color:#fff;">${escapeHtml(query)}</span>" 
+            共匹配到 <b style="color:#ff6b6b; font-size:1.1em;">${matches.length}</b> 条
+        </div>`;
     matches.slice().reverse().forEach((msg, idx) => {
-        const rawText = msg.mes.replace(/<[^>]+>/g, ""); 
+        const rawText = msg.mes.replace(/<[^>]+>/g, "");
         const regex = new RegExp(`(${query})`, "gi");
         const highlight = rawText.replace(regex, '<span class="highlight-text">$1</span>');
         html += `
-        <div class="search-result-item ${msg.is_user?'':'is-ai'}">
+        <div class="search-result-item ${msg.is_user ? '' : 'is-ai'}">
             <div style="display:flex; justify-content:space-between; opacity:0.6; font-size:0.8em; margin-bottom:5px;">
                 <span>${msg.send_date || "Unknown Date"}</span>
                 ${!msg.is_user ? `<span class="singularity-collect-btn" data-text="${encodeURIComponent(rawText)}" title="收藏">🧬 收藏</span>` : ''}
@@ -766,8 +804,8 @@ function renderObsessionSearch(query, context) {
     });
     html += `</div>`;
     $('#obs-body-content').html(html);
-    
-    $('#obs-body-content').find('.singularity-collect-btn').on('click', function() {
+
+    $('#obs-body-content').find('.singularity-collect-btn').on('click', function () {
         const text = decodeURIComponent($(this).data('text'));
         storeGeneSequence(context.name2, text, null, "Obsession Collect");
         $(this).text("✔️ 已归档").css("color", "#b19cd9");
@@ -777,15 +815,54 @@ function renderObsessionSearch(query, context) {
 // ============================================================================
 // 🎼 核心逻辑
 // ============================================================================
+// 强制使用顶层窗口抓取 Blob 
+async function assimilateAudio(url) {
+    if (!url) return null;
+
+    if (!url.startsWith("http") && !url.startsWith("blob:") && !url.startsWith("data:")) {
+        const baseUrl = window.location.origin;
+        let cleanPath = url.startsWith("/") ? url.slice(1) : url;
+        url = `${baseUrl}/${cleanPath}`;
+    }
+
+    try {
+        console.log("[Singularity] Attempting to fetch audio:", url);
+
+        const fetcher = (window.top && window.top.fetch) ? window.top.fetch : window.fetch;
+
+        const response = await fetcher(url);
+        if (!response.ok) throw new Error(`Fetch failed: ${response.status}`);
+        return await response.blob();
+    } catch (err) {
+        console.warn("[Singularity] Audio capture failed:", err);
+        toastr.error("无法抓取音频流，可能是跨域限制。", "Singularity Error");
+        return null;
+    }
+}
+
 function playTrackByIndex(index) {
     if (index < 0 || index >= globalPlaylist.length) return;
     currentTrackIndex = index;
     const item = globalPlaylist[index];
     let src = null;
-    if (item.path) src = item.path.startsWith("http") || item.path.startsWith("/") ? item.path : "/" + item.path;
-    else if (item.data) src = item.data;
-    
+
+    if (item.path) {
+        let safePath = item.path.replace(/\\/g, "/");
+        if (!safePath.startsWith("http") && !safePath.startsWith("/")) {
+            safePath = "/" + safePath;
+        }
+        src = safePath;
+    }
+    else if (item.data) {
+        src = item.data;
+    }
+
     if (src) {
+        console.log("[Singularity] Playing URL:", src);
+        if (audioPlayer.src && audioPlayer.src.startsWith("blob:") && audioPlayer.src !== src) {
+            console.log("清理旧的音频内存:", audioPlayer.src);
+            URL.revokeObjectURL(audioPlayer.src);
+        }
         audioPlayer.src = src;
         audioPlayer.play().catch(e => console.error(e));
         isPlaying = true;
@@ -813,7 +890,7 @@ function togglePlay() {
 function updatePlayerUI() {
     const icon = isPlaying ? '<i class="fa-solid fa-pause"></i>' : '<i class="fa-solid fa-play"></i>';
     $("#hux-play-btn").html(icon);
-    $('#singularity-modal #hux-play-btn').html(icon); 
+    $('#singularity-modal #hux-play-btn').html(icon);
     const item = globalPlaylist[currentTrackIndex];
     if (item) {
         $("#hux-status").text(`🎵 ${item.title || "Unknown Track"}`);
@@ -821,14 +898,42 @@ function updatePlayerUI() {
     }
 }
 
+// ============================================================================
+// 文件上传接口 
+// ============================================================================
+
 async function storeGeneSequence(charName, textContent, audioBlob, date) {
     const settings = loadSettings();
     const uniqueKey = getUniqueCharKey();
     if (!settings.biomass[uniqueKey]) settings.biomass[uniqueKey] = [];
-    
+
     if (settings.biomass[uniqueKey].some(x => x.text === textContent)) {
         toastr.warning("记忆已存在", "Singularity");
         return false;
+    }
+
+    let savedFilePath = null;
+
+    if (audioBlob) {
+        try {
+            if (typeof audioBlob === 'object' && audioBlob instanceof Blob) {
+                toastr.info("正在归档音频样本...", "Singularity");
+
+                let ext = "wav";
+                if (audioBlob.type.includes("mp3")) ext = "mp3";
+                const safeChar = charName.replace(/[^a-zA-Z0-9_\-]/g, "_");
+                const filename = `Singularity_${safeChar}_${Date.now()}.${ext}`;
+
+                savedFilePath = await uploadToSillyTavern(audioBlob, filename);
+                toastr.success("音频实体已固化。", "Singularity");
+            }
+            else if (typeof audioBlob === 'string') {
+                savedFilePath = audioBlob;
+            }
+        } catch (e) {
+            console.error("上传失败:", e);
+            toastr.error("音频归档失败，仅保存文本。", "Error");
+        }
     }
 
     settings.biomass[uniqueKey].push({
@@ -836,10 +941,10 @@ async function storeGeneSequence(charName, textContent, audioBlob, date) {
         date: date || new Date().toLocaleString(),
         title: "",
         text: textContent,
-        path: null,
+        path: savedFilePath || null,
         data: null
     });
-    
+
     saveSettings(settings);
     refreshInterface();
     if ($('#singularity-modal').is(':visible')) renderSingularityList();
@@ -850,9 +955,9 @@ function exportAsZip(charName, list) {
     if (typeof JSZip === 'undefined') { toastr.error("ZIP库未加载"); return; }
     const zip = new JSZip();
     let log = "";
-    list.forEach((item) => { log += `[${item.date}] ${item.text.replace(/<[^>]+>/g,"")}\n---\n`; });
+    list.forEach((item) => { log += `[${item.date}] ${item.text.replace(/<[^>]+>/g, "")}\n---\n`; });
     zip.file("memory_log.txt", log);
-    zip.generateAsync({type:"blob"}).then(content => {
+    zip.generateAsync({ type: "blob" }).then(content => {
         const a = document.createElement("a");
         a.href = URL.createObjectURL(content);
         a.download = `${charName}_memories.zip`;
@@ -861,59 +966,158 @@ function exportAsZip(charName, list) {
 }
 
 // ============================================================================
-// 👁️‍🗨️ 按钮注入逻辑 
+// 👁️‍🗨️ 按钮注入与采集逻辑
 // ============================================================================
+
+// 1. 扫描并注入按钮
+function injectButton($mes) {
+    if (!$mes || $mes.length === 0) return;
+    if ($mes.find(".hux-assimilate-btn").length > 0) return;
+
+    let $targetArea = $mes.find(".mes_buttons");
+    if ($targetArea.length === 0) $targetArea = $mes.find(".timestamp");
+
+    const $btn = $(`<div class="hux-assimilate-btn" title="采集至 Singularity" style="display:inline-block;cursor:pointer;margin:0 8px;opacity:0.3;font-size:1.1em;transition:0.2s;">👁️‍🗨️</div>`);
+
+    $btn.hover(
+        function () { $(this).css({ opacity: 0.9, transform: "scale(1.2)" }) },
+        function () { $(this).css({ opacity: 0.3, transform: "scale(1)" }) }
+    );
+
+    if ($targetArea.length > 0) $targetArea.append($btn);
+    else $mes.find(".mes_text").after($btn);
+}
+
+// 2. 全量扫描函数 (管理者：页面加载或切换角色时用)
+// 这个函数现在只是简单的循环调用 injectButton
 function scanForOrganics() {
-    const $messages = $("#chat .mes");
-    
-    if ($messages.length === 0) return;
-
-    $messages.each(function() {
-        const $mes = $(this);
-        
-        if ($mes.find(".hux-assimilate-btn").length > 0) return;
-        
-        const $btn = $(`<span class="hux-assimilate-btn" title="采集至 Singularity">👁️‍🗨️</span>`);
-        const $timestamp = $mes.find(".mes_timestamp, .timestamp, .swipe_date");
-        
-        if ($timestamp.length > 0) {
-            $timestamp.append($btn);
-        } else {
-            const $mesBlock = $mes.find(".mes_block");
-            if ($mesBlock.length > 0) {
-                $mesBlock.find(".ch_name, .name_text").first().append($btn);
-            }
-        }
-
-        $btn.on("click", async function(e) {
-            e.stopPropagation();
-            const text = $mes.find(".mes_text").html();
-            const success = await storeGeneSequence(getContext().name2, text, null, "Chat Collect");
-            if(success) {
-                $(this).text("🧬").css({opacity: 1, color: "#b19cd9", cursor: "default"});
-                toastr.success("记忆碎片已捕获", "Singularity");
-            }
-        });
+    $(".mes").each(function () {
+        injectButton($(this));
     });
 }
 
+$(document).on("click", ".hux-assimilate-btn", async function (e) {
+    e.preventDefault();
+    e.stopPropagation();
+
+    const $icon = $(this);
+    const $mes = $icon.closest(".mes");
+
+    $icon.text("⏳").css({ opacity: 1 });
+
+    const context = getContext();
+    const charName = $mes.attr("ch_name") || context.name2 || "Unknown";
+    let rawString = $mes.find(".mes_text").text();
+    let noStyleString = rawString.replace(/<style[\s\S]*?<\/style>/gi, "");
+    let cleanText = noStyleString
+        .replace(/```html/g, "") 
+        .replace(/```/g, "")    
+        .replace(/<[^>]+>/g, "\n") 
+        .replace(/&nbsp;/g, " ");  
+    const fullText = cleanText
+        .split('\n')          
+        .map(line => line.trim()) 
+        .filter(line => line)    
+        .join('\n');          
+
+    let msgDate = $mes.find(".timestamp").text().trim();
+    if (!msgDate) msgDate = $mes.attr("timestamp") || new Date().toLocaleString();
+
+    // ---------------------------------------------------------
+    // 搜捕音频源
+    // ---------------------------------------------------------
+    let audioUrl = null;
+
+    const $internalAudio = $mes.find("audio");
+    if ($internalAudio.length > 0 && $internalAudio.attr("src")) {
+        audioUrl = $internalAudio.attr("src");
+        console.log("[Singularity] Found internal audio:", audioUrl);
+    }
+
+    if (!audioUrl) {
+        try {
+            const topDoc = window.top.document;
+            const globalAudio = topDoc.getElementById("tts_audio");
+
+            if (globalAudio && globalAudio.src) {
+                console.log("[Singularity] Found global TTS audio:", globalAudio.src);
+                audioUrl = globalAudio.src;
+            }
+        } catch (err) {
+            console.warn("[Singularity] Cannot access parent DOM for audio search:", err);
+        }
+    }
+
+
+    // ---------------------------------------------------------
+    // 数据提取与转换
+    // ---------------------------------------------------------
+    let audioBlob = null;
+
+    if (audioUrl) {
+        if (typeof fetchBlobFromParent === 'function') {
+            audioBlob = await fetchBlobFromParent(audioUrl);
+        } else {
+            try {
+                const res = await fetch(audioUrl);
+                audioBlob = await res.blob();
+            } catch (e) {
+                console.error("Fetch failed in fallback", e);
+            }
+        }
+    } else {
+        console.warn("[Singularity] No audio source found for this message.");
+    }
+
+    // ---------------------------------------------------------
+    // 存储序列
+    // ---------------------------------------------------------
+    const success = await storeGeneSequence(charName, fullText, audioBlob, msgDate);
+
+    if (success) {
+        if (audioBlob) {
+            $icon.text("🧬").css("color", "#b19cd9");
+            toastr.success("音频实体已捕获。", "Singularity");
+        } else {
+            $icon.text("📝").css("color", "#a8d8ea");
+            toastr.warning("未检测到音频流，仅保存文本。", "Singularity");
+        }
+
+        refreshInterface();
+
+        setTimeout(() => {
+            $icon.text("👁️‍🗨️").css("color", "").css("opacity", 0.3);
+        }, 3000);
+    } else {
+        $icon.text("⚠️");
+        setTimeout(() => $icon.text("👁️‍🗨️"), 2000);
+    }
+});
+
 // ============================================================================
-// 🚀 启动与监听
+// 启动与监听
 // ============================================================================
 jQuery(() => {
     console.log("Singularity + Obsession Merge [Optimized] Loaded.");
     refreshInterface();
+
     setTimeout(scanForOrganics, 1000);
     setTimeout(scanForOrganics, 3000);
 
     const chatObserver = new MutationObserver((mutations) => {
-        let shouldScan = false;
         mutations.forEach(mutation => {
-            if (mutation.addedNodes.length > 0) {
-                shouldScan = true;
-            }
+            mutation.addedNodes.forEach(node => {
+                if (node.nodeType === 1) {
+                    const $node = $(node);
+                    if ($node.hasClass('mes')) {
+                        injectButton($node);
+                    }
+                    else {
+                        $node.find('.mes').each((_, el) => injectButton($(el)));
+                    }
+                }
+            });
         });
-        if (shouldScan) scanForOrganics();
     });
 
     const chatContainer = document.querySelector('#chat');
@@ -922,7 +1126,7 @@ jQuery(() => {
     } else {
         setTimeout(() => {
             const retryChat = document.querySelector('#chat');
-            if(retryChat) chatObserver.observe(retryChat, { childList: true, subtree: true });
+            if (retryChat) chatObserver.observe(retryChat, { childList: true, subtree: true });
         }, 2000);
     }
 
@@ -931,17 +1135,19 @@ jQuery(() => {
         setTimeout(scanForOrganics, 500);
     });
 });
+
+
 // ============================================================================
-// 🌍 全局挂载 
+// 全局挂载 
 // ============================================================================
-window.openSingularityGlobal = function(e) {
-    if(e) { e.preventDefault(); e.stopPropagation(); }
-    console.log("Global Singularity Triggered"); 
-    showSingularityModal(); 
+window.openSingularityGlobal = function (e) {
+    if (e) { e.preventDefault(); e.stopPropagation(); }
+    console.log("Global Singularity Triggered");
+    showSingularityModal();
 };
 
-window.openObsessionGlobal = function(e) {
-    if(e) { e.preventDefault(); e.stopPropagation(); }
-    console.log("Global Obsession Triggered"); 
+window.openObsessionGlobal = function (e) {
+    if (e) { e.preventDefault(); e.stopPropagation(); }
+    console.log("Global Obsession Triggered");
     showObsessionModal();
 };
