@@ -1,4 +1,4 @@
-# The Singularity 奇点 V4.0
+# The Singularity 奇点 V5.0
 这是一个为 SillyTavern 设计的综合增强插件，将 记忆收藏 (Singularity) 与 聊天数据分析 (Obsession) 两大核心功能融合于一体。通过优雅的 UI 界面，帮助用户更好地管理与角色的珍贵回忆及交互数据。
 
 ## :sparkles: 主要功能
