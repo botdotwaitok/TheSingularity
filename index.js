@@ -18,8 +18,11 @@ let isPlaying = false;
 audioPlayer.onended = () => playNextTrack();
 
 // 加载 JSZip (用于导出)
-if (typeof window.JSZip === 'undefined') {
-    $.getScript("https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js");
+let jsZipLoaded = typeof window.JSZip !== 'undefined';
+if (!jsZipLoaded) {
+    $.getScript("https://cdnjs.cloudflare.com/ajax/libs/jszip/3.10.1/jszip.min.js")
+        .done(() => { jsZipLoaded = true; console.log("[Singularity] JSZip loaded."); })
+        .fail(() => { console.warn("[Singularity] JSZip failed to load. Export will be unavailable."); });
 }
 
 // ============================================================================
@@ -47,6 +50,10 @@ function escapeHtml(text) {
         .replace(/>/g, "&gt;")
         .replace(/"/g, "&quot;")
         .replace(/'/g, "&#039;");
+}
+
+function escapeRegExp(str) {
+    return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
 }
 
 // ============================================================================
@@ -320,8 +327,7 @@ function refreshInterface() {
             
             <div id="${CONTENT_ID}" class="merged-content-wrapper" style="display:none; width:100%; flex-direction:column; gap:10px;">
                 
-                <div class="obs-big-btn" 
-                     onclick="window.openSingularityGlobal(event)" 
+                <div class="obs-big-btn" id="btn-open-singularity"
                      style="background: linear-gradient(135deg, #1c1c1c, #3a3a3a); color: var(--hux-accent); border-color: var(--hux-accent); position: relative; z-index: 1000; cursor: pointer;">
                     
                     <div style="font-size: 1.5em; margin-bottom: 5px; pointer-events: none;">
@@ -332,8 +338,7 @@ function refreshInterface() {
                     </div>
                 </div>
 
-                <div class="obs-big-btn" 
-                     onclick="window.openObsessionGlobal(event)"
+                <div class="obs-big-btn" id="btn-open-obsession"
                      style="position: relative; z-index: 1000; cursor: pointer;">
                      
                     <div style="font-size: 1.5em; margin-bottom: 5px; pointer-events: none;">
@@ -348,10 +353,7 @@ function refreshInterface() {
         `;
         $drawer.html(html);
 
-        $drawer.find(".inline-drawer-toggle").off('click touchstart').on("click touchstart", function (e) {
-            if (e.type === 'touchstart') $(this).data('ts', Date.now());
-            if (e.type === 'click' && $(this).data('ts') && Date.now() - $(this).data('ts') < 500) return;
-
+        $drawer.find(".inline-drawer-toggle").on("click", function (e) {
             e.preventDefault();
             const $wrapper = $(`#${CONTENT_ID}`);
             const $icon = $(this).find(".inline-drawer-icon");
@@ -364,6 +366,15 @@ function refreshInterface() {
                     $icon.removeClass("fa-circle-chevron-right").addClass("fa-circle-chevron-down");
                 });
             }
+        });
+
+        $drawer.find('#btn-open-singularity').on('click', function (e) {
+            e.preventDefault(); e.stopPropagation();
+            showSingularityModal();
+        });
+        $drawer.find('#btn-open-obsession').on('click', function (e) {
+            e.preventDefault(); e.stopPropagation();
+            showObsessionModal();
         });
     }
 }
@@ -382,7 +393,7 @@ function showSingularityModal() {
     <div class="obsession-modal" id="singularity-modal">
         <div class="obsession-header">
             <div style="font-size:1.2em; font-weight:bold; color:var(--hux-accent); white-space:nowrap; margin-right:15px;">
-                🧠 Singularity: ${charName}
+                🧠 Singularity: ${escapeHtml(charName)}
             </div>
             
             <div style="flex-grow:1; max-width:500px; margin:0 10px;">
@@ -399,6 +410,7 @@ function showSingularityModal() {
                 </div>
 
                 <div class="hux-btn" id="hux-export" title="导出备份"><i class="fa-solid fa-file-zipper"></i></div>
+                <div class="hux-btn" id="hux-import" title="导入记忆" style="color:#66bb6a; border-color:#66bb6a;"><i class="fa-solid fa-file-import"></i></div>
             </div>
             
             <div class="hux-btn" id="close-singularity" style="width:auto; padding:0 15px; border-color:transparent;">EXIT</div>
@@ -411,7 +423,12 @@ function showSingularityModal() {
     $('#singularity-modal').css({ 'background-color': '#121212', 'background': '#121212' });
     renderSingularityList();
 
-    $('#close-singularity').on('click', () => $('#singularity-modal').remove());
+    $('#close-singularity').on('click', () => {
+        audioPlayer.pause();
+        isPlaying = false;
+        updatePlayerUI();
+        $('#singularity-modal').remove();
+    });
 
     const $modal = $('#singularity-modal');
     $modal.find("#hux-play-btn").on("click", togglePlay);
@@ -419,6 +436,7 @@ function showSingularityModal() {
     $modal.find("#hux-export").on("click", () => exportAsZip(uniqueKey, loadSettings().biomass[uniqueKey] || []));
 
     $modal.find("#hux-migrate-btn").on("click", migrateLegacyData);
+    $modal.find("#hux-import").on("click", () => importFromFile(uniqueKey));
 
     $modal.find('#singularity-search').on('input', function () {
         renderSingularityList($(this).val());
@@ -469,7 +487,7 @@ function renderSingularityList(filterText = "") {
             const hasAudio = !!(item.data || item.path);
             const plainText = item.text.replace(/<[^>]*>/g, "").slice(0, 60);
 
-            let displayTitle = item.title ? `【${item.title}】` : '';
+            let displayTitle = item.title ? `【${escapeHtml(item.title)}】` : '';
             let displayText = plainText;
 
             listHtml += `
@@ -504,19 +522,22 @@ function renderSingularityList(filterText = "") {
     $container.find(".del-item").on("click", function (e) {
         e.stopPropagation();
         if (confirm("移除此记忆？")) {
-            settings.biomass[uniqueKey] = settings.biomass[uniqueKey].filter(x => x.id !== $(this).data("id"));
-            saveSettings(settings);
+            const currentSettings = loadSettings();
+            const itemId = $(this).data("id");
+            currentSettings.biomass[uniqueKey] = currentSettings.biomass[uniqueKey].filter(x => x.id !== itemId);
+            saveSettings(currentSettings);
             renderSingularityList($("#singularity-search").val());
         }
     });
     $container.find(".edit-item").on("click", function (e) {
         e.stopPropagation();
-        const item = settings.biomass[uniqueKey].find(x => x.id === $(this).data("id"));
+        const currentSettings = loadSettings();
+        const item = currentSettings.biomass[uniqueKey].find(x => x.id === $(this).data("id"));
         if (item) {
             const t = prompt("标题:", item.title);
             if (t !== null) {
                 item.title = t;
-                saveSettings(settings);
+                saveSettings(currentSettings);
                 renderSingularityList($("#singularity-search").val());
             }
         }
@@ -537,7 +558,7 @@ function showObsessionModal() {
     const modalHtml = `
     <div class="obsession-modal" id="obsession-modal">
         <div class="obsession-header">
-            <div style="font-size:1.2em; font-weight:bold; color:#ff6b6b;">🕷️ The Obsession: ${charName}</div>
+            <div style="font-size:1.2em; font-weight:bold; color:#ff6b6b;">🕷️ The Obsession: ${escapeHtml(charName)}</div>
             <div style="flex-grow:1; max-width:500px; margin:0 20px;">
                 <input type="text" id="obs-search" placeholder="搜索记忆碎片..." style="width:100%; padding:8px 15px; border-radius:20px; border:1px solid #555; background:rgba(0,0,0,0.3); color:white;">
             </div>
@@ -789,15 +810,19 @@ function renderObsessionSearch(query, context) {
             关键词 "<span style="color:#fff;">${escapeHtml(query)}</span>" 
             共匹配到 <b style="color:#ff6b6b; font-size:1.1em;">${matches.length}</b> 条
         </div>`;
+    const rawTexts = [];
     matches.slice().reverse().forEach((msg, idx) => {
         const rawText = msg.mes.replace(/<[^>]+>/g, "");
-        const regex = new RegExp(`(${query})`, "gi");
-        const highlight = rawText.replace(regex, '<span class="highlight-text">$1</span>');
+        rawTexts.push(rawText);
+        const safeQuery = escapeRegExp(query);
+        const regex = new RegExp(`(${safeQuery})`, "gi");
+        const escapedText = escapeHtml(rawText);
+        const highlight = escapedText.replace(regex, '<span class="highlight-text">$1</span>');
         html += `
         <div class="search-result-item ${msg.is_user ? '' : 'is-ai'}">
             <div style="display:flex; justify-content:space-between; opacity:0.6; font-size:0.8em; margin-bottom:5px;">
                 <span>${msg.send_date || "Unknown Date"}</span>
-                ${!msg.is_user ? `<span class="singularity-collect-btn" data-text="${encodeURIComponent(rawText)}" title="收藏">🧬 收藏</span>` : ''}
+                ${!msg.is_user ? `<span class="singularity-collect-btn" data-idx="${idx}" title="收藏">🧬 收藏</span>` : ''}
             </div>
             <div style="white-space:pre-wrap;">${highlight}</div>
         </div>`;
@@ -805,8 +830,11 @@ function renderObsessionSearch(query, context) {
     html += `</div>`;
     $('#obs-body-content').html(html);
 
-    $('#obs-body-content').find('.singularity-collect-btn').on('click', function () {
-        const text = decodeURIComponent($(this).data('text'));
+    $('#obs-body-content').find('.singularity-collect-btn').each(function () {
+        const idx = parseInt($(this).attr('data-idx'), 10);
+        $(this).data('rawText', rawTexts[idx]);
+    }).on('click', function () {
+        const text = $(this).data('rawText');
         storeGeneSequence(context.name2, text, null, "Obsession Collect");
         $(this).text("✔️ 已归档").css("color", "#b19cd9");
     });
@@ -828,7 +856,10 @@ async function assimilateAudio(url) {
     try {
         console.log("[Singularity] Attempting to fetch audio:", url);
 
-        const fetcher = (window.top && window.top.fetch) ? window.top.fetch : window.fetch;
+        let fetcher = window.fetch;
+        try {
+            if (window.top && window.top.fetch) fetcher = window.top.fetch;
+        } catch (_) { /* cross-origin, use local fetch */ }
 
         const response = await fetcher(url);
         if (!response.ok) throw new Error(`Fetch failed: ${response.status}`);
@@ -937,7 +968,7 @@ async function storeGeneSequence(charName, textContent, audioBlob, date) {
     }
 
     settings.biomass[uniqueKey].push({
-        id: Date.now(),
+        id: Date.now().toString(36) + Math.random().toString(36).slice(2),
         date: date || new Date().toLocaleString(),
         title: "",
         text: textContent,
@@ -955,14 +986,99 @@ function exportAsZip(charName, list) {
     if (typeof JSZip === 'undefined') { toastr.error("ZIP库未加载"); return; }
     const zip = new JSZip();
     let log = "";
+    const jsonData = list.map(item => ({
+        id: item.id,
+        date: item.date,
+        title: item.title || "",
+        text: item.text.replace(/<[^>]+>/g, ""),
+        hasAudio: !!(item.path || item.data)
+    }));
     list.forEach((item) => { log += `[${item.date}] ${item.text.replace(/<[^>]+>/g, "")}\n---\n`; });
     zip.file("memory_log.txt", log);
+    zip.file("memories.json", JSON.stringify(jsonData, null, 2));
     zip.generateAsync({ type: "blob" }).then(content => {
         const a = document.createElement("a");
         a.href = URL.createObjectURL(content);
         a.download = `${charName}_memories.zip`;
         a.click();
     });
+}
+
+async function importFromFile(uniqueKey) {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.json,.zip';
+    input.onchange = async (e) => {
+        const file = e.target.files[0];
+        if (!file) return;
+
+        try {
+            let importedItems = [];
+
+            if (file.name.endsWith('.zip')) {
+                if (typeof JSZip === 'undefined') {
+                    toastr.error("ZIP库未加载，请稍后重试", "Singularity");
+                    return;
+                }
+                const zip = await JSZip.loadAsync(file);
+                const jsonFile = zip.file('memories.json');
+                if (!jsonFile) {
+                    toastr.error("ZIP中未找到 memories.json", "Singularity");
+                    return;
+                }
+                const jsonText = await jsonFile.async('string');
+                importedItems = JSON.parse(jsonText);
+            } else {
+                const text = await file.text();
+                importedItems = JSON.parse(text);
+            }
+
+            if (!Array.isArray(importedItems) || importedItems.length === 0) {
+                toastr.warning("文件为空或格式不正确", "Singularity");
+                return;
+            }
+
+            const settings = loadSettings();
+            if (!settings.biomass[uniqueKey]) settings.biomass[uniqueKey] = [];
+            const existingTexts = new Set(settings.biomass[uniqueKey].map(x => x.text));
+
+            let addedCount = 0;
+            let skippedCount = 0;
+
+            for (const item of importedItems) {
+                if (!item.text) continue;
+
+                if (existingTexts.has(item.text)) {
+                    skippedCount++;
+                    continue;
+                }
+
+                settings.biomass[uniqueKey].push({
+                    id: Date.now().toString(36) + Math.random().toString(36).slice(2),
+                    date: item.date || new Date().toLocaleString(),
+                    title: item.title || "",
+                    text: item.text,
+                    path: null,
+                    data: null
+                });
+                existingTexts.add(item.text);
+                addedCount++;
+            }
+
+            saveSettings(settings);
+            renderSingularityList($('#singularity-search').val());
+
+            if (addedCount > 0) {
+                toastr.success(`成功导入 ${addedCount} 条记忆${skippedCount > 0 ? `（跳过 ${skippedCount} 条重复）` : ''}`, "Singularity");
+            } else {
+                toastr.info(`所有 ${skippedCount} 条记忆已存在，无需导入`, "Singularity");
+            }
+        } catch (err) {
+            console.error('[Singularity] Import failed:', err);
+            toastr.error(`导入失败: ${err.message}`, "Singularity");
+        }
+    };
+    input.click();
 }
 
 // ============================================================================
@@ -1137,17 +1253,4 @@ jQuery(() => {
 });
 
 
-// ============================================================================
-// 全局挂载 
-// ============================================================================
-window.openSingularityGlobal = function (e) {
-    if (e) { e.preventDefault(); e.stopPropagation(); }
-    console.log("Global Singularity Triggered");
-    showSingularityModal();
-};
 
-window.openObsessionGlobal = function (e) {
-    if (e) { e.preventDefault(); e.stopPropagation(); }
-    console.log("Global Obsession Triggered");
-    showObsessionModal();
-};
