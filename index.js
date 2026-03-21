@@ -17,6 +17,15 @@ let audioPlayer = new Audio();
 let isPlaying = false;
 audioPlayer.onended = () => playNextTrack();
 
+// Entity Whisper 音频捕获缓存
+let _lastWhisperAudioBlob = null;
+document.addEventListener('entity-whisper-audio', (e) => {
+    if (e.detail && e.detail.blob) {
+        _lastWhisperAudioBlob = e.detail.blob;
+        console.log('[Singularity] Cached Entity Whisper audio blob, size:', e.detail.blob.size);
+    }
+});
+
 // 加载 JSZip (用于导出)
 let jsZipLoaded = typeof window.JSZip !== 'undefined';
 if (!jsZipLoaded) {
@@ -1181,7 +1190,16 @@ $(document).on("click", ".hux-assimilate-btn", async function (e) {
                 console.error("Fetch failed in fallback", e);
             }
         }
-    } else {
+    }
+
+    // Fallback: use cached Entity Whisper audio blob
+    if (!audioBlob && _lastWhisperAudioBlob) {
+        console.log("[Singularity] Using cached Entity Whisper audio blob");
+        audioBlob = _lastWhisperAudioBlob;
+        _lastWhisperAudioBlob = null; // consume once
+    }
+
+    if (!audioBlob) {
         console.warn("[Singularity] No audio source found for this message.");
     }
 
